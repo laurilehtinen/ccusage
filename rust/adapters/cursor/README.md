@@ -15,11 +15,12 @@ Anything that is not specific to this source belongs in `ccusage-core` or
 
 ## Data source
 
-Only records that already carry token counts. Transcript JSONL under
+Only records that already carry billed token counts. Transcript JSONL under
 `agent-transcripts/` is ignored: those files are conversation text, not a
-usage ledger. Interactive CLI chats are keyed by the folder UUID under
-`chats/<workspace-hash>/<uuid>/store.db` (hex-encoded `meta`, blob
-`tokenCount`). SDK catalog rows keep `agent-...` ids.
+usage ledger. Interactive CLI chats under `chats/<workspace-hash>/<uuid>/store.db`
+are used only when a blob already has `tokenCount` / `usage`; a context-window
+snapshot is not billed usage and is skipped. SDK catalog rows keep `agent-...`
+ids.
 
 ```text
 $CURSOR_AGENT_HOME/   # or ~/.cursor
