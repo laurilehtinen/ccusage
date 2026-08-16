@@ -2073,6 +2073,10 @@ fn pricing_alias(model: &str) -> Option<&'static str> {
     match model {
         "gpt-5.6" => Some("gpt-5.6-sol"),
         "gpt-5.3-spark" => Some("gpt-5.3-codex-spark"),
+        // Grok Build CLI's default catalog id. The priced snapshot is the 0.1
+        // release; later grok-build-* siblings must not win via longest-key
+        // fuzzy matching the way gpt-5.6-terra would without the sol alias.
+        "grok-build" => Some("grok-build-0.1"),
         _ => None,
     }
 }
@@ -3602,6 +3606,30 @@ mod tests {
     }
 
     #[test]
+    fn grok_build_alias_resolves_to_grok_build_0_1() {
+        // Grok Build CLI records the family id `grok-build` (config default and
+        // `modelUsage` key). The priced snapshot is `grok-build-0.1`, the same
+        // pattern as `gpt-5.6` → `gpt-5.6-sol`.
+        let pricing = PricingMap::load_embedded();
+        let alias = pricing
+            .find("grok-build")
+            .expect("grok-build should resolve to grok-build-0.1");
+        let canonical = pricing.find("grok-build-0.1").unwrap();
+
+        assert_eq!(alias.input, canonical.input);
+        assert_eq!(alias.output, canonical.output);
+        assert_eq!(alias.cache_read, canonical.cache_read);
+        assert_eq!(alias.input_above_200k, canonical.input_above_200k);
+        assert_eq!(alias.output_above_200k, canonical.output_above_200k);
+        assert_eq!(
+            pricing.context_limit("grok-build"),
+            pricing.context_limit("grok-build-0.1")
+        );
+        assert_eq!(pricing.context_limit("grok-build"), Some(256_000));
+        assert_eq!(long_context_split_threshold("grok-build"), 200_000);
+    }
+
+    #[test]
     fn embedded_pricing_fills_gpt_long_context_tier_rates() {
         let pricing = PricingMap::load_embedded();
 
@@ -3688,6 +3716,17 @@ mod tests {
             assert_eq!(entry.long_context_threshold, Some(200_000), "{model}");
         }
         assert_eq!(long_context_split_threshold("grok-4.5"), 200_000);
+
+        // grok-build-0.1 is cheaper than grok-4.5 but still doubles above 200K.
+        let grok_build = pricing.find("grok-build-0.1").unwrap();
+        assert!((grok_build.input * 1e6 - 1.0).abs() < 1e-9);
+        assert!((grok_build.output * 1e6 - 2.0).abs() < 1e-9);
+        assert!((grok_build.cache_read * 1e6 - 0.2).abs() < 1e-9);
+        assert!((grok_build.input_above_200k.unwrap() * 1e6 - 2.0).abs() < 1e-9);
+        assert!((grok_build.output_above_200k.unwrap() * 1e6 - 4.0).abs() < 1e-9);
+        assert!((grok_build.cache_read_above_200k.unwrap() * 1e6 - 0.4).abs() < 1e-9);
+        assert_eq!(grok_build.long_context_threshold, Some(200_000));
+        assert_eq!(long_context_split_threshold("grok-build-0.1"), 200_000);
     }
 
     #[test]

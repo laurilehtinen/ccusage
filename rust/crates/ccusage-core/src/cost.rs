@@ -349,6 +349,30 @@ mod tests {
     }
 
     #[test]
+    fn grok_build_cached_context_selects_the_long_context_tier() {
+        // grok-build-0.1: base $1/$2, cache read $0.2; above 200K $2/$4/$0.4.
+        let pricing = PricingMap::load_embedded();
+        let cached_heavy = TokenUsageRaw {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            cache_read_input_tokens: 500_000,
+            ..TokenUsageRaw::default()
+        };
+        let cost = calculate_cost_for_usage(
+            Some("grok-build"),
+            cached_heavy,
+            None,
+            CostMode::Calculate,
+            Some(&pricing),
+        );
+        // 0.01M * 2 + 0.001M * 4 + 0.5M * 0.4
+        assert!(
+            (cost - 0.224).abs() < 1e-9,
+            "grok-build cached-heavy cost was {cost}"
+        );
+    }
+
+    #[test]
     fn parses_cache_creation_breakdown_from_usage_json() {
         let usage = serde_json::from_str::<TokenUsageRaw>(
             r#"{
