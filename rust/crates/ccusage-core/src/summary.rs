@@ -499,7 +499,7 @@ mod tests {
         ];
 
         sort_summaries(&mut rows, &SortOrder::Asc, |row| {
-            crate::report_sort_key(row, crate::cli::AgentReportKind::Session)
+            crate::agent_report::report_sort_key(row, crate::cli::AgentReportKind::Session)
         });
 
         assert_eq!(

@@ -15,7 +15,7 @@ use crate::{
     MILLIS_PER_DAY, MILLIS_PER_MINUTE, Result, SessionAccumulator, TimestampMs, block_json,
     calculate_burn_rate,
     cli::{
-        AgentReportKind, BlocksArgs, CostSource, DailyArgs, SessionArgs, SharedArgs, SortOrder,
+        AgentReportKind, BlocksArgs, CostSource, DailyArgs, SessionArgs, SharedArgs,
         StatuslineArgs, VisualBurnRate, WeekDay, WeeklyArgs,
     },
     color,

@@ -17,14 +17,6 @@ pub fn report_from_rows(rows: &[UsageSummary], kind: AgentReportKind) -> Value {
     })
 }
 
-pub(super) fn summary_period(row: &UsageSummary) -> &str {
-    row.date
-        .as_deref()
-        .or(row.month.as_deref())
-        .or(row.session_id.as_deref())
-        .unwrap_or("")
-}
-
 pub fn summarize_entries(
     entries: &[LoadedEntry],
     kind: AgentReportKind,

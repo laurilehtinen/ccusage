@@ -21,7 +21,6 @@ pub mod cli {
     pub use ccusage_cli::*;
 }
 
-pub(crate) use agent_report::report_sort_key;
 pub use agent_report::{agent_summary_json, first_column, sort_report_rows, summary_period};
 pub use cost::{
     calculate_cost, calculate_cost_for_usage, calculate_cost_from_pricing,
