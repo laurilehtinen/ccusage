@@ -13,7 +13,7 @@ use serde_json::json;
 use super::*;
 use crate::{
     Align, CodexGroup, CodexModelUsage, ModelBreakdown, PricingMap,
-    cli::{AgentReportKind, CodexSpeed, SharedArgs},
+    cli::{AgentReportKind, CodexSpeed, SharedArgs, SortOrder},
     model_aliases::set_model_aliases_for_tests,
 };
 use ccusage_test_support::{EnvVarsGuard, fs_fixture};
@@ -891,7 +891,7 @@ fn displays_total_tokens_with_cache_tokens_like_typescript_table() {
         model_breakdowns: Vec::new(),
     };
 
-    let cells = all_table_row(&row, false, false, false);
+    let cells = all_table_row(&row, false, false, false, false);
 
     assert_eq!(cells[7], "130");
 }
@@ -959,7 +959,7 @@ fn all_table_rows_match_main_agent_breakdown_display() {
     };
 
     assert_eq!(
-        all_table_row(&row, true, false, false),
+        all_table_row(&row, true, false, false, false),
         vec!["2026-01-02", "All", "", "100", "20", "$0.01"]
     );
     assert_eq!(
@@ -967,6 +967,7 @@ fn all_table_rows_match_main_agent_breakdown_display() {
             row.agent_breakdowns.as_ref().unwrap().first().unwrap(),
             true,
             true,
+            false,
             false,
         ),
         vec!["", "- Codex", "- gpt-5", "100", "20", "$0.01"]
@@ -1037,4 +1038,80 @@ fn full_table_columns_include_cache_and_total_token_metrics() {
         ]
     );
     assert_eq!(headers.len(), aligns.len());
+}
+
+#[test]
+fn session_table_columns_include_last_activity() {
+    let (full_headers, full_aligns) = all_table_columns(AgentReportKind::Session, false, false);
+    let (compact_headers, compact_aligns) =
+        all_table_columns(AgentReportKind::Session, true, false);
+
+    assert_eq!(*full_headers.last().unwrap(), "Last Activity");
+    assert_eq!(full_headers.len(), full_aligns.len());
+    assert_eq!(*compact_headers.last().unwrap(), "Last Activity");
+    assert_eq!(compact_headers.len(), compact_aligns.len());
+}
+
+#[test]
+fn session_table_row_shows_day_and_time_for_last_activity() {
+    let row = AllRow {
+        period: "session-a".to_string(),
+        agent: "claude",
+        models_used: vec!["claude-sonnet-4-20250514".to_string()],
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_tokens: 1,
+        cache_read_tokens: 2,
+        total_tokens: 18,
+        total_cost: 0.01,
+        metadata: Some(json!({ "lastActivity": "2026-01-02T12:34:56.000Z" })),
+        metadata_agents: None,
+        agent_breakdowns: None,
+        model_breakdowns: Vec::new(),
+    };
+
+    let cells = all_table_row(&row, false, false, false, true);
+
+    assert_eq!(cells.last().map(String::as_str), Some("2026-01-02 12:34"));
+}
+
+#[test]
+fn session_rows_sort_oldest_first_so_newest_is_last() {
+    let mut rows = vec![
+        AllRow {
+            period: "aaa-newer".to_string(),
+            agent: "claude",
+            models_used: Vec::new(),
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 1,
+            total_cost: 9.0,
+            metadata: Some(json!({ "lastActivity": "2026-01-03T18:00:00.000Z" })),
+            metadata_agents: None,
+            agent_breakdowns: None,
+            model_breakdowns: Vec::new(),
+        },
+        AllRow {
+            period: "zzz-older".to_string(),
+            agent: "codex",
+            models_used: Vec::new(),
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 1,
+            total_cost: 1.0,
+            metadata: Some(json!({ "lastActivity": "2026-01-01T08:00:00.000Z" })),
+            metadata_agents: None,
+            agent_breakdowns: None,
+            model_breakdowns: Vec::new(),
+        },
+    ];
+
+    sort_rows(&mut rows, AgentReportKind::Session, &SortOrder::Asc);
+
+    assert_eq!(rows[0].period, "zzz-older");
+    assert_eq!(rows[1].period, "aaa-newer");
 }

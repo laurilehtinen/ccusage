@@ -62,16 +62,16 @@ You can find Claude session IDs by running `ccusage claude session` and looking 
 │                                               │
 ╰───────────────────────────────────────────────╯
 
-┌────────────┬────────────────────┬────────┬─────────┬──────────────┬────────────┬──────────────┬────────────┬───────────────┐
-│ Session    │ Models             │ Input  │ Output  │ Cache Create │ Cache Read │ Total Tokens │ Cost (USD) │ Last Activity │
-├────────────┼────────────────────┼────────┼─────────┼──────────────┼────────────┼──────────────┼────────────┼───────────────┤
-│ abc123-def │ • opus-4-1         │  4,512 │ 350,846 │          512 │      1,024 │      356,894 │    $156.40 │ 2026-05-16    │
-│            │ • sonnet-4-5       │        │         │              │            │              │            │               │
-│ ghi456-jkl │ • sonnet-4-5       │  2,775 │ 186,645 │          256 │        768 │      190,444 │     $98.45 │ 2026-05-15    │
-│ mno789-pqr │ • opus-4-1         │  1,887 │ 183,055 │          128 │        512 │      185,582 │     $81.73 │ 2026-05-14    │
-├────────────┼────────────────────┼────────┼─────────┼──────────────┼────────────┼──────────────┼────────────┼───────────────┤
-│ Total      │                  │  9,174 │ 720,546 │          896 │      2,304 │      732,920 │    $336.58 │               │
-└────────────┴────────────────────┴────────┴─────────┴──────────────┴────────────┴──────────────┴────────────┴───────────────┘
+┌────────────┬────────────────────┬────────┬─────────┬──────────────┬────────────┬──────────────┬────────────┬──────────────────┐
+│ Session    │ Models             │ Input  │ Output  │ Cache Create │ Cache Read │ Total Tokens │ Cost (USD) │ Last Activity    │
+├────────────┼────────────────────┼────────┼─────────┼──────────────┼────────────┼──────────────┼────────────┼──────────────────┤
+│ mno789-pqr │ • opus-4-1         │  1,887 │ 183,055 │          128 │        512 │      185,582 │     $81.73 │ 2026-05-14 09:12 │
+│ ghi456-jkl │ • sonnet-4-5       │  2,775 │ 186,645 │          256 │        768 │      190,444 │     $98.45 │ 2026-05-15 14:20 │
+│ abc123-def │ • opus-4-1         │  4,512 │ 350,846 │          512 │      1,024 │      356,894 │    $156.40 │ 2026-05-16 17:45 │
+│            │ • sonnet-4-5       │        │         │              │            │              │            │                  │
+├────────────┼────────────────────┼────────┼─────────┼──────────────┼────────────┼──────────────┼────────────┼──────────────────┤
+│ Total      │                    │  9,174 │ 720,546 │          896 │      2,304 │      732,920 │    $336.58 │                  │
+└────────────┴────────────────────┴────────┴─────────┴──────────────┴────────────┴──────────────┴────────────┴──────────────────┘
 ```
 
 ## Understanding Session Data
@@ -88,11 +88,11 @@ Sessions are displayed using the last two segments of their full identifier:
 - **Input/Output Tokens**: Total tokens exchanged in the conversation
 - **Cache Tokens**: Cache creation and read tokens for context efficiency
 - **Cost**: Estimated USD cost for the entire conversation
-- **Last Activity**: Date of the most recent message in the session
+- **Last Activity**: Calendar day and clock time (`YYYY-MM-DD HH:MM`, UTC) of the most recent message in the session. JSON keeps the full RFC 3339 timestamp.
 
 ### Sorting
 
-Sessions are sorted by cost (highest first) by default, making it easy to identify your most expensive conversations.
+Sessions are sorted by last activity, oldest first, so the newest session is at the bottom. Pass `--order desc` to list the newest session first.
 
 ## Command Options
 
@@ -133,6 +133,16 @@ ccusage session --since 20260501 --until 20260516
 ccusage session --since $(date -d '7 days ago' +%Y%m%d)
 ```
 
+### Sort Order
+
+```bash
+# Oldest first, newest at the bottom (default)
+ccusage session --order asc
+
+# Newest first
+ccusage session --order desc
+```
+
 ### Cost Calculation Modes
 
 ```bash
@@ -157,15 +167,15 @@ ccusage session --breakdown
 Example with breakdown:
 
 ```
-┌───────────────┬──────────────────────┬────────┬─────────┬────────────┬───────────────┐
-│ Session       │ Models               │ Input  │ Output  │ Cost (USD) │ Last Activity │
-├───────────────┼──────────────────────┼────────┼─────────┼────────────┼───────────────┤
-│ abc123-def    │ opus-4-1, sonnet-4-5 │  4,512 │ 350,846 │    $156.40 │ 2026-05-16    │
-├───────────────┼──────────────────────┼────────┼─────────┼────────────┼───────────────┤
-│   └─ opus-4-1 │                      │  2,000 │ 200,000 │     $95.50 │               │
-├───────────────┼──────────────────────┼────────┼─────────┼────────────┼───────────────┤
-│   └─ sonnet-4-5                      │  2,512 │ 150,846 │     $60.90 │               │
-└───────────────┴──────────────────────┴────────┴─────────┴────────────┴───────────────┘
+┌───────────────┬──────────────────────┬────────┬─────────┬────────────┬──────────────────┐
+│ Session       │ Models               │ Input  │ Output  │ Cost (USD) │ Last Activity    │
+├───────────────┼──────────────────────┼────────┼─────────┼────────────┼──────────────────┤
+│ abc123-def    │ opus-4-1, sonnet-4-5 │  4,512 │ 350,846 │    $156.40 │ 2026-05-16 17:45 │
+├───────────────┼──────────────────────┼────────┼─────────┼────────────┼──────────────────┤
+│   └─ opus-4-1 │                      │  2,000 │ 200,000 │     $95.50 │                  │
+├───────────────┼──────────────────────┼────────┼─────────┼────────────┼──────────────────┤
+│   └─ sonnet-4-5                      │  2,512 │ 150,846 │     $60.90 │                  │
+└───────────────┴──────────────────────┴────────┴─────────┴────────────┴──────────────────┘
 ```
 
 ### JSON Output
@@ -222,13 +232,14 @@ ccusage session -O
 
 ### Identify Expensive Conversations
 
-Session reports help you understand which conversations are most costly:
+Session reports list conversations by last activity. Use the Cost column, or sort JSON by cost, to find expensive ones:
 
 ```bash
 ccusage session
+ccusage session --json | jq '.sessions | max_by(.totalCost)'
 ```
 
-Look at the top sessions to understand:
+Look at high-cost sessions to understand:
 
 - Which types of conversations cost the most
 - Whether long coding sessions or research tasks are more expensive

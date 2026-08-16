@@ -28,7 +28,7 @@ pub(crate) use types::{CodexRawUsage, merge_codex_service_tiers};
 
 use report::{print_table_from_groups, report_from_groups};
 
-use crate::cli::{AgentReportKind, CodexSpeed};
+use crate::cli::{AgentReportKind, CodexSpeed, SortOrder};
 
 use serde_json::Value;
 
@@ -42,7 +42,7 @@ pub fn run(args: AgentCommandArgs) -> Result<()> {
     let groups = load_groups(&shared, args.kind)?;
     let speed = resolve_codex_speed(args.codex_speed);
     if wants_json(&shared) {
-        let output = report_from_groups(&groups, args.kind, &pricing, speed);
+        let output = report_from_groups(&groups, args.kind, &pricing, speed, &shared.order);
         return print_json_or_jq(output, shared.jq.as_deref(), shared.no_cost);
     }
     print_table_from_groups(&groups, args.kind, &pricing, speed, &shared)
@@ -57,7 +57,13 @@ pub fn report_json(
     speed: CodexSpeed,
 ) -> Result<Value> {
     let groups = aggregate_events(events, kind, timezone)?;
-    Ok(report_from_groups(&groups, kind, pricing, speed.into()))
+    Ok(report_from_groups(
+        &groups,
+        kind,
+        pricing,
+        speed.into(),
+        &SortOrder::Asc,
+    ))
 }
 
 #[cfg(test)]
@@ -66,7 +72,7 @@ mod tests {
 
     use super::aggregate::load_groups_from_directory;
     use super::*;
-    use crate::cli::SharedArgs;
+    use crate::cli::{SharedArgs, SortOrder};
     use crate::{CodexModelUsage, CodexServiceTier, CodexTokenUsageEvent, CodexUsageBucket};
     use ccusage_test_support::fs_fixture;
 
@@ -506,6 +512,71 @@ mod tests {
         let cost = calculate_codex_model_cost("gpt-test", &usage, &pricing, speed);
 
         assert!((cost - 40e-6).abs() < f64::EPSILON);
+    }
+
+    fn session_event(session_id: &str, timestamp: &str) -> CodexTokenUsageEvent {
+        CodexTokenUsageEvent {
+            session_id: session_id.to_string(),
+            timestamp: timestamp.to_string(),
+            model: Some("gpt-5".to_string()),
+            input_tokens: 10,
+            cached_input_tokens: 0,
+            output_tokens: 2,
+            reasoning_output_tokens: 0,
+            total_tokens: 12,
+            is_fallback_model: false,
+            service_tier: None,
+        }
+    }
+
+    fn session_ids(report: &Value) -> Vec<&str> {
+        report["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn session_json_orders_oldest_first_so_newest_is_last() {
+        let pricing = PricingMap::default();
+        let report = report_json(
+            &[
+                session_event("aaa-newer", "2026-01-03T18:00:00.000Z"),
+                session_event("zzz-older", "2026-01-01T08:00:00.000Z"),
+            ],
+            AgentReportKind::Session,
+            Some("UTC"),
+            &pricing,
+            CodexSpeed::Standard,
+        )
+        .unwrap();
+
+        assert_eq!(session_ids(&report), vec!["zzz-older", "aaa-newer"]);
+        assert_eq!(
+            report["sessions"][1]["lastActivity"],
+            "2026-01-03T18:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn session_json_orders_newest_first_when_order_is_desc() {
+        let pricing = PricingMap::default();
+        let events = [
+            session_event("aaa-newer", "2026-01-03T18:00:00.000Z"),
+            session_event("zzz-older", "2026-01-01T08:00:00.000Z"),
+        ];
+        let groups = aggregate_events(&events, AgentReportKind::Session, Some("UTC")).unwrap();
+        let report = report_from_groups(
+            &groups,
+            AgentReportKind::Session,
+            &pricing,
+            CodexSpeed::Standard.into(),
+            &SortOrder::Desc,
+        );
+
+        assert_eq!(session_ids(&report), vec!["aaa-newer", "zzz-older"]);
     }
 
     #[test]

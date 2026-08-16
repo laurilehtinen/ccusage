@@ -5,8 +5,9 @@ use serde_json::Value;
 use ccusage_core::cli::{AgentReportKind, SharedArgs};
 use ccusage_core::{
     Align, Color, Result, SimpleTable, USAGE_COMPACT_WIDTH_THRESHOLD, UsageSummary, color,
-    first_column, format_currency, format_models_multiline, format_number, json_value_u64,
-    print_box_title, should_use_compact_layout, terminal_style, terminal_width, totals_json,
+    first_column, format_currency, format_last_activity_display, format_models_multiline,
+    format_number, json_value_u64, print_box_title, should_use_compact_layout, terminal_style,
+    terminal_width, totals_json,
 };
 
 pub fn print_table_for_agent(
@@ -35,6 +36,7 @@ pub fn print_table_for_agent(
         shared,
     );
     let first_column = first_column(kind);
+    let include_last_activity = kind == AgentReportKind::Session;
     let mut table = if compact {
         let mut headers = vec![
             first_column,
@@ -55,6 +57,10 @@ pub fn print_table_for_agent(
         if shared.no_cost {
             headers.pop();
             aligns.pop();
+        }
+        if include_last_activity {
+            headers.push("Last Activity");
+            aligns.push(Align::Left);
         }
         SimpleTable::new(headers, aligns, terminal_style(shared))
     } else {
@@ -84,6 +90,10 @@ pub fn print_table_for_agent(
             headers.pop();
             aligns.pop();
         }
+        if include_last_activity {
+            headers.push("Last Activity");
+            aligns.push(Align::Left);
+        }
         SimpleTable::new(headers, aligns, terminal_style(shared))
     }
     .with_terminal_width(terminal_width)
@@ -98,8 +108,10 @@ pub fn print_table_for_agent(
             .or(row.session_id.as_deref())
             .unwrap_or("");
         let models = format_models_multiline(&row.models_used);
+        let last_activity =
+            format_last_activity_display(row.last_activity.as_deref().unwrap_or(""));
         if compact {
-            let mut row = vec![
+            let mut values = vec![
                 label.to_string(),
                 models,
                 format_number(row.input_tokens),
@@ -108,11 +120,14 @@ pub fn print_table_for_agent(
                 format_currency(row.total_cost),
             ];
             if shared.no_cost {
-                row.pop();
+                values.pop();
             }
-            table.push(row);
+            if include_last_activity {
+                values.push(last_activity);
+            }
+            table.push(values);
         } else {
-            let mut row = vec![
+            let mut values = vec![
                 label.to_string(),
                 models,
                 format_number(row.input_tokens),
@@ -124,9 +139,12 @@ pub fn print_table_for_agent(
                 format_currency(row.total_cost),
             ];
             if shared.no_cost {
-                row.pop();
+                values.pop();
             }
-            table.push(row);
+            if include_last_activity {
+                values.push(last_activity);
+            }
+            table.push(values);
         }
     }
 
@@ -165,6 +183,9 @@ pub fn print_table_for_agent(
         if shared.no_cost {
             row.pop();
         }
+        if include_last_activity {
+            row.push(String::new());
+        }
         table.push(row);
     } else {
         let input = json_value_u64(totals.get("inputTokens"));
@@ -197,6 +218,9 @@ pub fn print_table_for_agent(
         ];
         if shared.no_cost {
             row.pop();
+        }
+        if include_last_activity {
+            row.push(String::new());
         }
         table.push(row);
     }

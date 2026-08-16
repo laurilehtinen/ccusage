@@ -91,7 +91,7 @@ use loader::{aggregate_rows, codex_group_row, load_agent_rows_parallel, load_row
 #[cfg(test)]
 use report::{
     all_report_title, all_table_columns, all_table_row, report_json, report_json_with_agents,
-    sections_report_json,
+    sections_report_json, sort_rows,
 };
 #[cfg(test)]
 use types::{AgentLoadSpec, AgentRows, AllRow};
