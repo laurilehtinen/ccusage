@@ -57,8 +57,10 @@ per-request long-context tiering.
 
 ## Model display and pricing
 
-- Display label: raw `modelUsage` key (e.g. `grok-4.5-build`)
-- Pricing candidates strip trailing `-build` and try `xai/` / `x-ai/` forms
+- Display label: raw `modelUsage` key (e.g. `grok-4.5-build`, `grok-build`)
+- Pricing candidates strip a trailing `-build` except when that would leave a
+  bare `grok` (the `grok-build` family). `grok-build` prices as `grok-build-0.1`.
+  Remaining candidates try `xai/` / `x-ai/` forms.
 
 ## Public surface
 

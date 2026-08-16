@@ -190,17 +190,28 @@ fn pricing_candidates(raw_model: &str) -> Vec<String> {
         return candidates;
     }
 
-    let normalized = stripped
-        .strip_suffix("-build")
-        .unwrap_or(stripped)
-        .to_string();
+    // Grok CLI appends `-build` to catalog ids (`grok-4.5-build`). The
+    // grok-build family is itself named `grok-build`, so stripping that suffix
+    // would leave a bare `grok` that fuzzy-matches other xAI models.
+    let normalized = match stripped.strip_suffix("-build") {
+        Some(stem) if stem != "grok" && !stem.is_empty() => stem,
+        _ => stripped,
+    };
 
     push(stripped.to_string());
     push(format!("xai/{stripped}"));
     push(format!("x-ai/{stripped}"));
-    push(normalized.clone());
-    push(format!("xai/{normalized}"));
-    push(format!("x-ai/{normalized}"));
+    if normalized != stripped {
+        push(normalized.to_string());
+        push(format!("xai/{normalized}"));
+        push(format!("x-ai/{normalized}"));
+    }
+    // Family default: `grok-build` (and `grok-build-build`) prices as 0.1.
+    if normalized == "grok-build" {
+        push("grok-build-0.1".to_string());
+        push("xai/grok-build-0.1".to_string());
+        push("x-ai/grok-build-0.1".to_string());
+    }
     candidates
 }
 
@@ -648,6 +659,35 @@ mod tests {
                 "grok-4.5".to_string(),
                 "xai/grok-4.5".to_string(),
                 "x-ai/grok-4.5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pricing_candidates_keep_the_grok_build_family() {
+        // `grok-build` is the catalog id, not a `-build` suffix on `grok`.
+        // Stripping it would leave a bare `grok` that fuzzy-matches other xAI
+        // models. The priced snapshot is grok-build-0.1.
+        assert_eq!(
+            pricing_candidates("grok-build"),
+            vec![
+                "grok-build".to_string(),
+                "xai/grok-build".to_string(),
+                "x-ai/grok-build".to_string(),
+                "grok-build-0.1".to_string(),
+                "xai/grok-build-0.1".to_string(),
+                "x-ai/grok-build-0.1".to_string(),
+            ]
+        );
+        assert_eq!(
+            pricing_candidates("grok-build-0.1-build"),
+            vec![
+                "grok-build-0.1-build".to_string(),
+                "xai/grok-build-0.1-build".to_string(),
+                "x-ai/grok-build-0.1-build".to_string(),
+                "grok-build-0.1".to_string(),
+                "xai/grok-build-0.1".to_string(),
+                "x-ai/grok-build-0.1".to_string(),
             ]
         );
     }
@@ -1139,6 +1179,48 @@ mod tests {
         assert_eq!(
             calculate_grok_cost("grok-4.5-build", usage, None, CostMode::Auto, &pricing),
             20.0
+        );
+    }
+
+    #[test]
+    fn prices_grok_build_from_embedded_grok_build_0_1_rates() {
+        let pricing = PricingMap::load_embedded();
+        let usage = TokenUsageRaw {
+            input_tokens: 100_000,
+            output_tokens: 100_000,
+            ..TokenUsageRaw::default()
+        };
+
+        let cost = calculate_grok_cost("grok-build", usage, None, CostMode::Calculate, &pricing);
+        // grok-build-0.1 short-context list price: $1/M input + $2/M output.
+        assert!(
+            (cost - 0.3).abs() < 1e-9,
+            "grok-build calculate cost was {cost}"
+        );
+    }
+
+    #[test]
+    fn turn_completed_maps_the_grok_build_model_usage_key() {
+        let line = r#"{"timestamp":1750000000,"params":{"sessionId":"sess-gb","update":{"sessionUpdate":"turn_completed","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40,"reasoningTokens":10,"modelUsage":{"grok-build":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40,"reasoningTokens":10}}}},"_meta":{"eventId":"evt-gb"}}}"#;
+        let fixture = fs_fixture!({
+            "sessions/proj/sess-1/updates.jsonl": line,
+        });
+        let files = GrokSessionFiles {
+            updates: fixture.path("sessions/proj/sess-1/updates.jsonl"),
+            summary: None,
+        };
+        let pricing = PricingMap::load_embedded();
+        let entries = parse_session_files(&files, None, CostMode::Calculate, &pricing).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model.as_deref(), Some("grok-build"));
+        assert_eq!(entries[0].data.message.usage.input_tokens, 60);
+        assert_eq!(entries[0].data.message.usage.cache_read_input_tokens, 40);
+        assert_eq!(entries[0].data.message.usage.output_tokens, 20);
+        assert_eq!(entries[0].missing_pricing_model, None);
+        assert!(
+            entries[0].cost > 0.0,
+            "grok-build should price from grok-build-0.1"
         );
     }
 }
