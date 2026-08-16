@@ -540,6 +540,7 @@ pub(super) fn records_from_json_value(
         value,
         InheritedIdentity {
             session: fallback_session.to_string(),
+            pin_session: false,
             model: None,
             model_id: None,
             timestamp: None,
@@ -550,9 +551,108 @@ pub(super) fn records_from_json_value(
     records
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct StoreSessionMeta {
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub timestamp: Option<TimestampMs>,
+}
+
+/// Read CLI `meta` JSON (plain or hex-encoded) for session id, model, and time.
+pub(super) fn store_session_meta_from_value(value: &Value) -> Option<StoreSessionMeta> {
+    let decoded = value.get("value").map(coerce_json_value);
+    let object = decoded
+        .as_ref()
+        .unwrap_or(value)
+        .as_object()
+        .or_else(|| value.as_object())?;
+    let object_value = Value::Object(object.clone());
+    let agent_id = json_string(&object_value, &["agentId", "agent_id"]);
+    let model = json_string(
+        &object_value,
+        &["lastUsedModel", "last_used_model", "model"],
+    );
+    let timestamp = timestamp_from_value(&object_value);
+    if agent_id.is_none() && model.is_none() && timestamp.is_none() {
+        return None;
+    }
+    Some(StoreSessionMeta {
+        agent_id,
+        model,
+        timestamp,
+    })
+}
+
+/// Parse blobs from a CLI/ACP `store.db`, applying hex `meta` identity.
+///
+/// When `pin_session` is set, the chat-folder UUID stays the session id even
+/// if a blob also carries an `agent-...` SDK id.
+pub(super) fn records_from_store_payload(
+    value: &Value,
+    fallback_session: &str,
+    project_path: &str,
+    meta: Option<&StoreSessionMeta>,
+    pin_session: bool,
+) -> Vec<CursorUsageRecord> {
+    let session = if pin_session {
+        fallback_session.to_string()
+    } else {
+        meta.and_then(|meta| meta.agent_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| fallback_session.to_string())
+    };
+    let mut records = Vec::new();
+    collect_records(
+        value,
+        InheritedIdentity {
+            session: session.clone(),
+            pin_session,
+            model: meta.and_then(|meta| meta.model.clone()),
+            model_id: None,
+            timestamp: meta.and_then(|meta| meta.timestamp),
+            project_path: project_path.to_string(),
+        },
+        &mut records,
+    );
+    if pin_session {
+        for record in &mut records {
+            record.session_id = session.clone();
+        }
+    }
+    records
+}
+
+pub(super) fn parse_json_or_hex(text: &str) -> Option<Value> {
+    let trimmed = text.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Some(value);
+    }
+    let bytes = hex_decode(trimmed)?;
+    let decoded = std::str::from_utf8(&bytes).ok()?;
+    serde_json::from_str(decoded).ok()
+}
+
+fn coerce_json_value(value: &Value) -> Value {
+    match value {
+        Value::String(text) => parse_json_or_hex(text).unwrap_or_else(|| value.clone()),
+        other => other.clone(),
+    }
+}
+
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) || !hex.is_ascii() || hex.is_empty() {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(hex.get(index..index + 2)?, 16).ok())
+        .collect()
+}
+
 #[derive(Clone)]
 struct InheritedIdentity {
     session: String,
+    pin_session: bool,
     model: Option<String>,
     model_id: Option<String>,
     timestamp: Option<TimestampMs>,
@@ -587,18 +687,19 @@ fn collect_records(
 }
 
 fn inherit_identity(value: &Value, mut inherited: InheritedIdentity) -> InheritedIdentity {
-    if let Some(session) = json_string(
-        value,
-        &[
-            "conversation_id",
-            "conversationId",
-            "session_id",
-            "sessionId",
-            "agentId",
-            "agent_id",
-        ],
-    )
-    .filter(|id| !id.is_empty())
+    if !inherited.pin_session
+        && let Some(session) = json_string(
+            value,
+            &[
+                "conversation_id",
+                "conversationId",
+                "session_id",
+                "sessionId",
+                "agentId",
+                "agent_id",
+            ],
+        )
+        .filter(|id| !id.is_empty())
     {
         inherited.session = session;
     }
@@ -608,6 +709,18 @@ fn inherit_identity(value: &Value, mut inherited: InheritedIdentity) -> Inherite
     }
     if let Some(model_id) = model_id.or_else(|| json_string(value, &["model_id", "modelId"])) {
         inherited.model_id = Some(model_id);
+    }
+    if let Some(model) = json_string(value, &["lastUsedModel", "last_used_model", "modelName"])
+        .or_else(|| {
+            value
+                .pointer("/providerOptions/cursor/modelName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+        })
+    {
+        inherited.model = Some(model);
     }
     if let Some(timestamp) = timestamp_from_value(value) {
         inherited.timestamp = Some(timestamp);
@@ -619,8 +732,9 @@ fn record_from_inherited_payload(
     value: &Value,
     inherited: &InheritedIdentity,
 ) -> Option<CursorUsageRecord> {
-    let parsed =
-        parse_usage_value(value).or_else(|| value.get("usage").and_then(parse_usage_value))?;
+    let parsed = parse_usage_value(value)
+        .or_else(|| value.get("usage").and_then(parse_usage_value))
+        .or_else(|| value.get("tokenCount").and_then(parse_usage_value))?;
     let timestamp = timestamp_from_value(value).or(inherited.timestamp)?;
     let (display, nested_model_id) = model_from_value(value.get("model"));
     let model_id = nested_model_id
@@ -630,17 +744,21 @@ fn record_from_inherited_payload(
         .or(model_id.clone())
         .or_else(|| inherited.model.clone())
         .filter(|model| !model.is_empty())?;
-    let session_id = json_string(
-        value,
-        &[
-            "conversation_id",
-            "conversationId",
-            "session_id",
-            "sessionId",
-        ],
-    )
-    .filter(|id| !id.is_empty())
-    .unwrap_or_else(|| inherited.session.clone());
+    let session_id = if inherited.pin_session {
+        inherited.session.clone()
+    } else {
+        json_string(
+            value,
+            &[
+                "conversation_id",
+                "conversationId",
+                "session_id",
+                "sessionId",
+            ],
+        )
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| inherited.session.clone())
+    };
     let message_id = json_string(
         value,
         &[
@@ -1020,5 +1138,52 @@ mod tests {
         assert_eq!(records[0].session_id, "agent-abc");
         assert_eq!(records[0].message_id, "run-1");
         assert_eq!(records[0].usage.input_tokens, 100);
+    }
+
+    #[test]
+    fn cli_store_hex_meta_pins_folder_uuid_and_reads_token_count() {
+        let json = r#"{"agentId":"c5f09ff7-69d5-414a-a4c9-b8ac792420fd","lastUsedModel":"composer-2.5","createdAt":1750000000000}"#;
+        let hex: String = json.bytes().map(|byte| format!("{byte:02x}")).collect();
+        let meta = store_session_meta_from_value(&serde_json::json!({
+            "key": "0",
+            "value": hex
+        }))
+        .unwrap();
+        assert_eq!(
+            meta.agent_id.as_deref(),
+            Some("c5f09ff7-69d5-414a-a4c9-b8ac792420fd")
+        );
+        assert_eq!(meta.model.as_deref(), Some("composer-2.5"));
+
+        let records = records_from_store_payload(
+            &serde_json::json!({
+                "role": "assistant",
+                "agentId": "agent-should-not-win",
+                "tokenCount": {
+                    "inputTokens": 40,
+                    "outputTokens": 8
+                }
+            }),
+            "c5f09ff7-69d5-414a-a4c9-b8ac792420fd",
+            "eea42053be10a3da86aa61bbf93e53bb",
+            Some(&meta),
+            true,
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].session_id,
+            "c5f09ff7-69d5-414a-a4c9-b8ac792420fd"
+        );
+        assert_eq!(records[0].model, "composer-2.5");
+        assert_eq!(records[0].usage.input_tokens, 40);
+        assert_eq!(records[0].usage.output_tokens, 8);
+        assert_eq!(records[0].project_path, "eea42053be10a3da86aa61bbf93e53bb");
+    }
+
+    #[test]
+    fn hex_decode_rejects_odd_length_and_accepts_json() {
+        assert!(parse_json_or_hex("7b2261223a317d").is_some());
+        assert!(parse_json_or_hex("abc").is_none());
+        assert_eq!(parse_json_or_hex(r#"{"a":1}"#).unwrap()["a"], 1);
     }
 }

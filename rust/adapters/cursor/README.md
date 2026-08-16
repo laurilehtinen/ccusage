@@ -17,7 +17,9 @@ Anything that is not specific to this source belongs in `ccusage-core` or
 
 Only records that already carry token counts. Transcript JSONL under
 `agent-transcripts/` is ignored: those files are conversation text, not a
-usage ledger.
+usage ledger. Interactive CLI chats are keyed by the folder UUID under
+`chats/<workspace-hash>/<uuid>/store.db` (hex-encoded `meta`, blob
+`tokenCount`). SDK catalog rows keep `agent-...` ids.
 
 ```text
 $CURSOR_AGENT_HOME/   # or ~/.cursor

@@ -71,9 +71,35 @@ pub(super) fn discover_source_files() -> Result<(Vec<CursorDbFile>, Vec<CursorNd
             &mut seen_db,
         );
         collect_named_files(
+            &root.join("chats"),
+            "index.db",
+            CursorDbKind::Index,
+            &mut dbs,
+            &mut seen_db,
+        );
+        collect_named_files_ndjson(
+            &root.join("chats"),
+            "runs.ndjson",
+            &mut ndjson,
+            &mut seen_ndjson,
+        );
+        collect_named_files_ndjson(
+            &root.join("chats"),
+            "run_events.ndjson",
+            &mut ndjson,
+            &mut seen_ndjson,
+        );
+        collect_named_files(
             &root.join("acp-sessions"),
             "store.db",
             CursorDbKind::Store,
+            &mut dbs,
+            &mut seen_db,
+        );
+        collect_named_files(
+            &root.join("acp-sessions"),
+            "index.db",
+            CursorDbKind::Index,
             &mut dbs,
             &mut seen_db,
         );
@@ -120,6 +146,21 @@ pub(super) fn identity_from_path(path: &Path) -> (String, String) {
         .and_then(|name| name.to_str())
         .unwrap_or("cursor");
     (session.to_string(), "cursor".to_string())
+}
+
+/// Chat-folder UUID for interactive CLI / ACP stores (`chats/<hash>/<uuid>/...`).
+pub(super) fn cli_session_id_from_path(path: &Path) -> Option<String> {
+    let parts: Vec<&str> = path
+        .iter()
+        .filter_map(|component| component.to_str())
+        .collect();
+    if let Some(index) = parts.iter().position(|part| *part == "chats") {
+        return parts.get(index + 2).map(|session| (*session).to_string());
+    }
+    if let Some(index) = parts.iter().position(|part| *part == "acp-sessions") {
+        return parts.get(index + 1).map(|session| (*session).to_string());
+    }
+    None
 }
 
 fn collect_sdk_stores(
@@ -369,5 +410,27 @@ mod tests {
         ));
         assert_eq!(session, "hash1");
         assert_eq!(project, "my-app");
+    }
+
+    #[test]
+    fn cli_session_id_from_path_uses_chat_folder_uuid() {
+        let session = cli_session_id_from_path(Path::new(
+            "/home/me/.cursor/chats/eea42053be10a3da86aa61bbf93e53bb/c5f09ff7-69d5-414a-a4c9-b8ac792420fd/store.db",
+        ));
+        assert_eq!(
+            session.as_deref(),
+            Some("c5f09ff7-69d5-414a-a4c9-b8ac792420fd")
+        );
+    }
+
+    #[test]
+    fn discovers_index_db_nested_under_cli_chat_folder() {
+        let fixture = fs_fixture!({
+            "chats/eea42053be10a3da86aa61bbf93e53bb/c5f09ff7-69d5-414a-a4c9-b8ac792420fd/index.db": "",
+        });
+        let _guard = with_cursor_home(fixture.root());
+        let (dbs, _) = discover_source_files().unwrap();
+        assert_eq!(dbs.len(), 1);
+        assert_eq!(dbs[0].kind, CursorDbKind::Index);
     }
 }

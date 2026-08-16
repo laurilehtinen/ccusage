@@ -103,7 +103,7 @@ Ensure recorded usage exists under `~/.cursor/chats/**/store.db`, `~/.cursor/acp
 :::
 
 ::: details Only some Cursor CLI sessions appear
-Each `agent-...` id is one session row. Extra usage on that same agent stays on that row and increases its tokens. A second agent is a second row. ccusage reads per-turn `run_events` (and JSONL `run_events.ndjson`) when `runs.usage` is empty, so newer agents are not dropped just because the catalog left the `runs` usage column blank. Per-agent `store.db` files under `sdk-agent-store/**/agents/` are read only when that hash has no `index.db`. IDE Composer history in `state.vscdb` is not a source. Turns with all-zero token blobs are skipped.
+Interactive CLI chats under `~/.cursor/chats/<workspace-hash>/<uuid>/store.db` are listed by that folder UUID (the same id `cursor agent --resume` uses), not by an `agent-...` SDK id. The CLI `meta` row is hex-encoded JSON (`lastUsedModel`, `createdAt`, `agentId`); ccusage decodes it and applies it to blob `tokenCount` / `usage` payloads that omit model or timestamp. SDK catalog rows still use `agent-...` ids. All-zero token blobs are skipped. IDE Composer history in `state.vscdb` is not a source.
 :::
 
 ::: details Costs showing as $0.00

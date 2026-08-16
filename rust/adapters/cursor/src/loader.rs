@@ -13,10 +13,11 @@ use crate::{
 
 use super::{
     parser::{
-        json_objects_from_bytes, record_to_loaded_entry, records_from_json_value,
-        records_from_sdk_index,
+        StoreSessionMeta, json_objects_from_bytes, parse_json_or_hex, record_to_loaded_entry,
+        records_from_json_value, records_from_sdk_index, records_from_store_payload,
+        store_session_meta_from_value,
     },
-    paths::{CursorDbKind, discover_source_files, identity_from_path},
+    paths::{CursorDbKind, cli_session_id_from_path, discover_source_files, identity_from_path},
 };
 
 pub fn load_entries(shared: &SharedArgs, pricing: &PricingMap) -> Result<Vec<LoadedEntry>> {
@@ -64,6 +65,30 @@ pub fn has_data() -> bool {
     discover_source_files().is_ok_and(|(dbs, ndjson)| !dbs.is_empty() || !ndjson.is_empty())
 }
 
+fn open_readonly_sqlite(path: &Path) -> std::result::Result<sqlite::Connection, sqlite::Error> {
+    let flags = sqlite::OpenFlags::new().with_read_only();
+    sqlite::Connection::open_with_flags(path, flags).or_else(|_| {
+        let uri = format!("file:{}?mode=ro", path.display());
+        sqlite::Connection::open_with_flags(
+            uri,
+            sqlite::OpenFlags::new().with_read_only().with_uri(),
+        )
+    })
+}
+
+fn load_store_session_meta(
+    connection: &sqlite::Connection,
+    tables: &[String],
+    shared: &SharedArgs,
+) -> Option<StoreSessionMeta> {
+    if !tables.iter().any(|table| table == "meta") {
+        return None;
+    }
+    load_table_rows(connection, "meta", shared)
+        .into_iter()
+        .find_map(|row| store_session_meta_from_value(&row))
+}
+
 fn load_database(
     path: &Path,
     kind: CursorDbKind,
@@ -71,9 +96,7 @@ fn load_database(
     shared: &SharedArgs,
     pricing: &PricingMap,
 ) -> Vec<LoadedEntry> {
-    let Ok(connection) =
-        sqlite::Connection::open_with_flags(path, sqlite::OpenFlags::new().with_read_only())
-    else {
+    let Ok(connection) = open_readonly_sqlite(path) else {
         debug_log(
             shared,
             format!("Failed to open Cursor database: {}", path.display()),
@@ -81,6 +104,10 @@ fn load_database(
         return Vec::new();
     };
     let (fallback_session, project_path) = identity_from_path(path);
+    let pinned_session = cli_session_id_from_path(path);
+    let session_id = pinned_session
+        .clone()
+        .unwrap_or_else(|| fallback_session.clone());
     let tables = table_names(&connection);
     let mut entries = Vec::new();
     match kind {
@@ -95,17 +122,37 @@ fn load_database(
             } else {
                 Vec::new()
             };
-            for record in records_from_sdk_index(&runs, &events, &fallback_session, &project_path) {
+            let mut records = records_from_sdk_index(&runs, &events, &session_id, &project_path);
+            if pinned_session.is_some() {
+                for record in &mut records {
+                    record.session_id = session_id.clone();
+                }
+            }
+            for record in records {
                 entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
             }
         }
         _ => {
+            let meta = load_store_session_meta(&connection, &tables, shared);
+            let session_id = pinned_session
+                .or_else(|| {
+                    meta.as_ref()
+                        .and_then(|meta| meta.agent_id.clone())
+                        .filter(|id| !id.is_empty())
+                })
+                .unwrap_or(session_id);
+            let pin_session = cli_session_id_from_path(path).is_some();
             for table in tables {
-                load_table(
+                if table == "meta" {
+                    continue;
+                }
+                load_store_table(
                     &connection,
                     &table,
-                    &fallback_session,
+                    &session_id,
                     &project_path,
+                    meta.as_ref(),
+                    pin_session,
                     tz,
                     shared,
                     pricing,
@@ -145,11 +192,13 @@ fn load_table_rows(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_table(
+fn load_store_table(
     connection: &sqlite::Connection,
     table: &str,
     fallback_session: &str,
     project_path: &str,
+    meta: Option<&StoreSessionMeta>,
+    pin_session: bool,
     tz: Option<&JiffTimeZone>,
     shared: &SharedArgs,
     pricing: &PricingMap,
@@ -163,15 +212,15 @@ fn load_table(
         match statement.next() {
             Ok(sqlite::State::Row) => {
                 if let Some(row) = row_json(&statement) {
-                    push_records_from_value(
+                    for record in records_from_store_payload(
                         &row,
                         fallback_session,
                         project_path,
-                        tz,
-                        shared.mode,
-                        pricing,
-                        entries,
-                    );
+                        meta,
+                        pin_session,
+                    ) {
+                        entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
+                    }
                 }
             }
             Ok(sqlite::State::Done) => break,
@@ -206,6 +255,8 @@ fn load_ndjson_groups(
             .or(events_path.as_deref())
             .unwrap_or(&dir);
         let (fallback_session, project_path) = identity_from_path(identity_path);
+        let pinned = cli_session_id_from_path(identity_path);
+        let session_id = pinned.clone().unwrap_or(fallback_session);
         let run_values = runs_path
             .as_ref()
             .map(|path| read_ndjson_values(path, shared))
@@ -214,24 +265,21 @@ fn load_ndjson_groups(
             .as_ref()
             .map(|path| read_ndjson_values(path, shared))
             .unwrap_or_default();
-        if events_path.is_some() {
-            for record in
-                records_from_sdk_index(&run_values, &event_values, &fallback_session, &project_path)
-            {
-                entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
-            }
+        let mut records = if events_path.is_some() {
+            records_from_sdk_index(&run_values, &event_values, &session_id, &project_path)
         } else {
-            for value in run_values {
-                push_records_from_value(
-                    &value,
-                    &fallback_session,
-                    &project_path,
-                    tz,
-                    shared.mode,
-                    pricing,
-                    &mut entries,
-                );
+            run_values
+                .iter()
+                .flat_map(|value| records_from_json_value(value, &session_id, &project_path))
+                .collect()
+        };
+        if pinned.is_some() {
+            for record in &mut records {
+                record.session_id = session_id.clone();
             }
+        }
+        for record in records {
+            entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
         }
     }
     entries
@@ -270,20 +318,6 @@ fn row_json(statement: &sqlite::Statement<'_>) -> Option<Value> {
         None
     } else {
         Some(Value::Object(row))
-    }
-}
-
-fn push_records_from_value(
-    value: &Value,
-    fallback_session: &str,
-    project_path: &str,
-    tz: Option<&JiffTimeZone>,
-    mode: crate::cli::CostMode,
-    pricing: &PricingMap,
-    entries: &mut Vec<LoadedEntry>,
-) {
-    for record in records_from_json_value(value, fallback_session, project_path) {
-        entries.push(record_to_loaded_entry(record, tz, mode, pricing));
     }
 }
 
@@ -333,9 +367,7 @@ fn cell_json(statement: &sqlite::Statement<'_>, index: usize) -> Option<Value> {
             .map(|value| json!(value)),
         sqlite::Type::String => {
             let text = statement.read::<String, _>(index).ok()?;
-            serde_json::from_str(&text)
-                .ok()
-                .or(Some(Value::String(text)))
+            parse_json_or_hex(&text).or(Some(Value::String(text)))
         }
         sqlite::Type::Binary => {
             let bytes = statement.read::<Vec<u8>, _>(index).ok()?;
@@ -472,11 +504,68 @@ mod tests {
         };
         let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].session_id.as_ref(), "conv-store");
+        assert_eq!(entries[0].session_id.as_ref(), "sess-store");
         assert_eq!(entries[0].data.message.id.as_deref(), Some("gen-1"));
         assert_eq!(entries[0].data.message.usage.input_tokens, 90);
         assert_eq!(entries[0].data.message.usage.cache_read_input_tokens, 40);
         assert_eq!(entries[0].project_path.as_ref(), "my-app");
+    }
+
+    fn create_cli_chat_store(path: &Path, meta_json: &str, blob: &[u8]) {
+        ensure_parent(path);
+        let db = sqlite::open(path).unwrap();
+        db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
+            .unwrap();
+        let hex: String = meta_json
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut meta = db
+            .prepare("INSERT INTO meta (key, value) VALUES (?1, ?2)")
+            .unwrap();
+        meta.bind((1, "0")).unwrap();
+        meta.bind((2, hex.as_str())).unwrap();
+        meta.next().unwrap();
+        let mut blob_stmt = db
+            .prepare("INSERT INTO blobs (id, data) VALUES (?1, ?2)")
+            .unwrap();
+        blob_stmt.bind((1, "blob-1")).unwrap();
+        blob_stmt
+            .bind((2, sqlite::Value::Binary(blob.to_vec())))
+            .unwrap();
+        blob_stmt.next().unwrap();
+    }
+
+    #[test]
+    fn loads_cli_chat_uuid_from_hex_meta_and_token_count_blobs() {
+        let fixture = fs_fixture!({});
+        let mut blob = vec![0x0a, 0x05];
+        blob.extend_from_slice(
+            br#"{"role":"assistant","agentId":"agent-should-not-win","tokenCount":{"inputTokens":40,"outputTokens":8}}"#,
+        );
+        create_cli_chat_store(
+            &fixture.path(
+                "chats/eea42053be10a3da86aa61bbf93e53bb/c5f09ff7-69d5-414a-a4c9-b8ac792420fd/store.db",
+            ),
+            r#"{"agentId":"c5f09ff7-69d5-414a-a4c9-b8ac792420fd","lastUsedModel":"composer-2.5","createdAt":1750000000000}"#,
+            &blob,
+        );
+        let _guard = with_cursor_home(fixture.root());
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].session_id.as_ref(),
+            "c5f09ff7-69d5-414a-a4c9-b8ac792420fd"
+        );
+        assert_eq!(entries[0].model.as_deref(), Some("composer-2.5"));
+        assert_eq!(entries[0].data.message.usage.input_tokens, 40);
+        assert_eq!(entries[0].data.message.usage.output_tokens, 8);
     }
 
     #[test]
