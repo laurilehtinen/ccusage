@@ -56,7 +56,7 @@ pub(super) struct CursorNdjsonFile {
     pub path: PathBuf,
 }
 
-/// Discover `store.db`, SDK `index.db`, and optional `runs.ndjson` under each root.
+/// Discover `store.db`, SDK `index.db`, per-agent stores, and optional JSONL.
 pub(super) fn discover_source_files() -> Result<(Vec<CursorDbFile>, Vec<CursorNdjsonFile>)> {
     let mut dbs = Vec::new();
     let mut ndjson = Vec::new();
@@ -71,9 +71,35 @@ pub(super) fn discover_source_files() -> Result<(Vec<CursorDbFile>, Vec<CursorNd
             &mut seen_db,
         );
         collect_named_files(
+            &root.join("chats"),
+            "index.db",
+            CursorDbKind::Index,
+            &mut dbs,
+            &mut seen_db,
+        );
+        collect_named_files_ndjson(
+            &root.join("chats"),
+            "runs.ndjson",
+            &mut ndjson,
+            &mut seen_ndjson,
+        );
+        collect_named_files_ndjson(
+            &root.join("chats"),
+            "run_events.ndjson",
+            &mut ndjson,
+            &mut seen_ndjson,
+        );
+        collect_named_files(
             &root.join("acp-sessions"),
             "store.db",
             CursorDbKind::Store,
+            &mut dbs,
+            &mut seen_db,
+        );
+        collect_named_files(
+            &root.join("acp-sessions"),
+            "index.db",
+            CursorDbKind::Index,
             &mut dbs,
             &mut seen_db,
         );
@@ -122,6 +148,21 @@ pub(super) fn identity_from_path(path: &Path) -> (String, String) {
     (session.to_string(), "cursor".to_string())
 }
 
+/// Chat-folder UUID for interactive CLI / ACP stores (`chats/<hash>/<uuid>/...`).
+pub(super) fn cli_session_id_from_path(path: &Path) -> Option<String> {
+    let parts: Vec<&str> = path
+        .iter()
+        .filter_map(|component| component.to_str())
+        .collect();
+    if let Some(index) = parts.iter().position(|part| *part == "chats") {
+        return parts.get(index + 2).map(|session| (*session).to_string());
+    }
+    if let Some(index) = parts.iter().position(|part| *part == "acp-sessions") {
+        return parts.get(index + 1).map(|session| (*session).to_string());
+    }
+    None
+}
+
 fn collect_sdk_stores(
     projects: &Path,
     dbs: &mut Vec<CursorDbFile>,
@@ -138,8 +179,51 @@ fn collect_sdk_stores(
             continue;
         }
         collect_named_files(&sdk_root, "index.db", CursorDbKind::Index, dbs, seen_db);
+        collect_sdk_agent_stores(&sdk_root, dbs, seen_db);
         collect_named_files_ndjson(&sdk_root, "runs.ndjson", ndjson, seen_ndjson);
+        collect_named_files_ndjson(&sdk_root, "run_events.ndjson", ndjson, seen_ndjson);
     }
+}
+
+/// Per-agent `store.db` under `agents/<sha>/`. Skip when the same SDK hash
+/// already has an `index.db`, so catalog usage is not double-counted from blobs.
+fn collect_sdk_agent_stores(
+    sdk_root: &Path,
+    dbs: &mut Vec<CursorDbFile>,
+    seen_db: &mut HashSet<PathBuf>,
+) {
+    let mut agent_stores = Vec::new();
+    let mut seen_agent = HashSet::new();
+    collect_named_files(
+        sdk_root,
+        "store.db",
+        CursorDbKind::Store,
+        &mut agent_stores,
+        &mut seen_agent,
+    );
+    for file in agent_stores {
+        if sdk_hash_has_index_db(&file.path) {
+            continue;
+        }
+        if seen_db.insert(file.path.clone()) {
+            dbs.push(file);
+        }
+    }
+}
+
+fn sdk_hash_has_index_db(store_db: &Path) -> bool {
+    for ancestor in store_db.ancestors().skip(1) {
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name == "sdk-agent-store")
+        {
+            return false;
+        }
+        if ancestor.join("index.db").is_file() {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_named_files(
@@ -213,6 +297,8 @@ mod tests {
             "acp-sessions/sess-2/store.db": "",
             "projects/my-app/sdk-agent-store/hash1/index.db": "",
             "projects/my-app/sdk-agent-store/hash1/runs.ndjson": "{}\n",
+            "projects/my-app/sdk-agent-store/hash1/run_events.ndjson": "{}\n",
+            "projects/my-app/sdk-agent-store/hash1/agents/abc/store.db": "",
             "projects/my-app/agent-transcripts/sess-1/sess-1.jsonl": "{}\n",
             "plugins/ignore-me/store.db": "",
         });
@@ -233,7 +319,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(ndjson.len(), 1);
+        assert_eq!(ndjson.len(), 2);
         assert!(
             dbs.iter()
                 .all(|file| !file.path.to_string_lossy().contains("plugins"))
@@ -241,6 +327,30 @@ mod tests {
         assert!(
             dbs.iter()
                 .all(|file| !file.path.to_string_lossy().contains("agent-transcripts"))
+        );
+        assert!(
+            dbs.iter()
+                .all(|file| !file.path.to_string_lossy().contains("/agents/"))
+        );
+    }
+
+    #[test]
+    fn discovers_per_agent_store_when_index_db_is_absent() {
+        let fixture = fs_fixture!({
+            "projects/my-app/sdk-agent-store/hash1/agents/abc/store.db": "",
+            "projects/my-app/sdk-agent-store/hash1/run_events.ndjson": "{}\n",
+        });
+        let _guard = with_cursor_home(fixture.root());
+        let (dbs, ndjson) = discover_source_files().unwrap();
+        assert_eq!(dbs.len(), 1);
+        assert_eq!(dbs[0].kind, CursorDbKind::Store);
+        assert!(dbs[0].path.to_string_lossy().ends_with("store.db"));
+        assert_eq!(ndjson.len(), 1);
+        assert!(
+            ndjson[0]
+                .path
+                .to_string_lossy()
+                .ends_with("run_events.ndjson")
         );
     }
 
@@ -300,5 +410,27 @@ mod tests {
         ));
         assert_eq!(session, "hash1");
         assert_eq!(project, "my-app");
+    }
+
+    #[test]
+    fn cli_session_id_from_path_uses_chat_folder_uuid() {
+        let session = cli_session_id_from_path(Path::new(
+            "/home/me/.cursor/chats/eea42053be10a3da86aa61bbf93e53bb/c5f09ff7-69d5-414a-a4c9-b8ac792420fd/store.db",
+        ));
+        assert_eq!(
+            session.as_deref(),
+            Some("c5f09ff7-69d5-414a-a4c9-b8ac792420fd")
+        );
+    }
+
+    #[test]
+    fn discovers_index_db_nested_under_cli_chat_folder() {
+        let fixture = fs_fixture!({
+            "chats/eea42053be10a3da86aa61bbf93e53bb/c5f09ff7-69d5-414a-a4c9-b8ac792420fd/index.db": "",
+        });
+        let _guard = with_cursor_home(fixture.root());
+        let (dbs, _) = discover_source_files().unwrap();
+        assert_eq!(dbs.len(), 1);
+        assert_eq!(dbs[0].kind, CursorDbKind::Index);
     }
 }

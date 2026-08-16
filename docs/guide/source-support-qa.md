@@ -49,11 +49,15 @@ LiteLLM estimates as the fallback. In-progress turns count only after
 
 ::: details Cursor CLI
 Cursor Agent CLI and the Cursor SDK are supported when they persist token
-counts locally. ccusage reads `${CURSOR_AGENT_HOME:-~/.cursor}/chats/**/store.db`,
-`acp-sessions/**/store.db`, and `projects/*/sdk-agent-store/*/index.db` (plus
-optional `runs.ndjson`). Agent transcripts under `agent-transcripts/` are
-conversation text only and are ignored. The Cursor Admin API is not used.
-Turns without recorded token counts are skipped. See [Cursor CLI](/guide/cursor/).
+counts locally. ccusage reads `${CURSOR_AGENT_HOME:-~/.cursor}/chats/**/store.db`
+(including hex-encoded `meta` and blob `tokenCount`), `acp-sessions/**/store.db`,
+and `projects/*/sdk-agent-store/*/index.db` (including the `run_events` table,
+plus optional `runs.ndjson` / `run_events.ndjson`, and per-agent
+`agents/*/store.db` when a hash has no `index.db`). Interactive CLI sessions
+use the chat-folder UUID; SDK catalog rows use `agent-...` ids. Agent
+transcripts under `agent-transcripts/` are conversation text only and are
+ignored. The Cursor Admin API is not used. Turns without recorded token counts
+are skipped. See [Cursor CLI](/guide/cursor/).
 :::
 
 ## Can These Be Added Later?

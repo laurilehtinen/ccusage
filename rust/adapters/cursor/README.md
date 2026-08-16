@@ -7,7 +7,7 @@ SDK usage into the entries the reports render.
 
 - `loader.rs` — reading sessions, progress, global dedupe, `has_data`
 - `parser.rs` — token split, model pricing candidates, JSON/SQLite mapping
-- `paths.rs` — root resolution and `store.db` / SDK `index.db` discovery
+- `paths.rs` — root resolution and `store.db` / SDK `index.db` / JSONL discovery
 - `report.rs` — daily / monthly / session summary shapes
 
 Anything that is not specific to this source belongs in `ccusage-core` or
@@ -17,15 +17,19 @@ Anything that is not specific to this source belongs in `ccusage-core` or
 
 Only records that already carry token counts. Transcript JSONL under
 `agent-transcripts/` is ignored: those files are conversation text, not a
-usage ledger.
+usage ledger. Interactive CLI chats are keyed by the folder UUID under
+`chats/<workspace-hash>/<uuid>/store.db` (hex-encoded `meta`, blob
+`tokenCount`). SDK catalog rows keep `agent-...` ids.
 
 ```text
 $CURSOR_AGENT_HOME/   # or ~/.cursor
 ├── chats/<workspace>/<session>/store.db          # interactive CLI
 ├── acp-sessions/<session>/store.db               # ACP / `agent acp`
 └── projects/<slug>/sdk-agent-store/<hash>/
-    ├── index.db                                  # SDK + CLI catalog
-    └── runs.ndjson                               # optional JSONL store
+    ├── index.db                                  # SDK + CLI catalog (`runs`, `run_events`)
+    ├── runs.ndjson                               # optional JSONL store
+    ├── run_events.ndjson                         # optional JSONL event log
+    └── agents/<sha256>/store.db                  # per-agent blobs when `index.db` is absent
 ```
 
 Runtime root priority: a non-empty `CURSOR_AGENT_HOME` (one directory, or

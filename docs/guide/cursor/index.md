@@ -35,8 +35,10 @@ $CURSOR_AGENT_HOME/   # or ~/.cursor
 ├── chats/<workspace>/<session>/store.db          # interactive CLI
 ├── acp-sessions/<session>/store.db               # ACP / `agent acp`
 └── projects/<slug>/sdk-agent-store/<hash>/
-    ├── index.db                                  # SDK + CLI catalog
-    └── runs.ndjson                               # optional JSONL store
+    ├── index.db                                  # SDK + CLI catalog (`runs`, `run_events`)
+    ├── runs.ndjson                               # optional JSONL store
+    ├── run_events.ndjson                         # optional JSONL usage events
+    └── agents/<sha256>/store.db                  # per-agent blobs when `index.db` is absent
 ```
 
 Only rows that already carry token counts are counted. All-zero usage blobs, including placeholder `tokenCount: {0,0}` values, are skipped. The Cursor Admin API is not used.
@@ -97,7 +99,11 @@ object for report-specific overrides. The data root is discovered from
 ## Troubleshooting
 
 ::: details No Cursor CLI usage data found
-Ensure recorded usage exists under `~/.cursor/chats/**/store.db`, `~/.cursor/acp-sessions/**/store.db`, or `~/.cursor/projects/*/sdk-agent-store/*/index.db`. Transcript JSONL under `agent-transcripts/` is not a usage source. Set `CURSOR_AGENT_HOME` if your data lives elsewhere.
+Ensure recorded usage exists under `~/.cursor/chats/**/store.db`, `~/.cursor/acp-sessions/**/store.db`, or `~/.cursor/projects/*/sdk-agent-store/*/index.db` (plus `run_events` in that catalog, optional `runs.ndjson` / `run_events.ndjson`, and per-agent `agents/*/store.db` when a hash has no `index.db`). Transcript JSONL under `agent-transcripts/` is not a usage source. Set `CURSOR_AGENT_HOME` if your data lives elsewhere.
+:::
+
+::: details Only some Cursor CLI sessions appear
+Interactive CLI chats under `~/.cursor/chats/<workspace-hash>/<uuid>/store.db` are listed by that folder UUID (the same id `cursor agent --resume` uses), not by an `agent-...` SDK id. The CLI `meta` row is hex-encoded JSON (`lastUsedModel`, `createdAt`, `agentId`); ccusage decodes it and applies it to blob `tokenCount` / `usage` payloads that omit model or timestamp. SDK catalog rows still use `agent-...` ids. All-zero token blobs are skipped. IDE Composer history in `state.vscdb` is not a source.
 :::
 
 ::: details Costs showing as $0.00
