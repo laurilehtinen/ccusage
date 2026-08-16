@@ -656,6 +656,7 @@ fn agent_label(agent: &str) -> &str {
         "kimi" => "Kimi",
         "qwen" => "Qwen",
         "grok" => "Grok",
+        "cursor" => "Cursor CLI",
         _ => agent,
     }
 }

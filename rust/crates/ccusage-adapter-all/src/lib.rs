@@ -14,6 +14,7 @@ mod adapter {
     pub use ccusage_adapter_codebuff as codebuff;
     pub use ccusage_adapter_codex as codex;
     pub use ccusage_adapter_copilot as copilot;
+    pub use ccusage_adapter_cursor as cursor;
     pub use ccusage_adapter_droid as droid;
     pub use ccusage_adapter_gemini as gemini;
     pub use ccusage_adapter_goose as goose;

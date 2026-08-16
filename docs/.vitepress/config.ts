@@ -84,6 +84,7 @@ export default defineConfig({
 						{ text: 'Kimi', link: '/guide/kimi/' },
 						{ text: 'OpenClaw', link: '/guide/openclaw/' },
 						{ text: 'Grok Build CLI', link: '/guide/grok/' },
+						{ text: 'Cursor CLI', link: '/guide/cursor/' },
 						{ text: 'Source Support Q&A', link: '/guide/source-support-qa' },
 					],
 				},
