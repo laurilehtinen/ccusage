@@ -1,4 +1,8 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use jiff::tz::TimeZone as JiffTimeZone;
 use serde_json::{Map, Value, json};
@@ -8,7 +12,10 @@ use crate::{
 };
 
 use super::{
-    parser::{json_objects_from_bytes, record_to_loaded_entry, records_from_json_value},
+    parser::{
+        json_objects_from_bytes, record_to_loaded_entry, records_from_json_value,
+        records_from_sdk_index,
+    },
     paths::{CursorDbKind, discover_source_files, identity_from_path},
 };
 
@@ -34,15 +41,10 @@ fn load_entries_inner(shared: &SharedArgs, pricing: &PricingMap) -> Result<Vec<L
         load_database(path, kind, tz.as_ref(), shared, pricing)
     });
     let ndjson_paths: Vec<_> = ndjson.iter().map(|file| file.path.clone()).collect();
-    let loaded_ndjson = read_files_parallel(&ndjson_paths, shared.single_thread, |path| {
-        load_ndjson(path, tz.as_ref(), shared, pricing)
-    });
+    let loaded_ndjson = load_ndjson_groups(&ndjson_paths, tz.as_ref(), shared, pricing);
 
-    let mut entries: Vec<_> = loaded_dbs
-        .into_iter()
-        .chain(loaded_ndjson)
-        .flatten()
-        .collect();
+    let mut entries: Vec<_> = loaded_dbs.into_iter().flatten().collect();
+    entries.extend(loaded_ndjson);
     let mut seen = HashSet::new();
     entries.retain(|entry| {
         let Some(message_id) = entry.data.message.id.as_deref() else {
@@ -82,17 +84,20 @@ fn load_database(
     let tables = table_names(&connection);
     let mut entries = Vec::new();
     match kind {
-        CursorDbKind::Index if tables.iter().any(|table| table == "runs") => {
-            load_table(
-                &connection,
-                "runs",
-                &fallback_session,
-                &project_path,
-                tz,
-                shared,
-                pricing,
-                &mut entries,
-            );
+        CursorDbKind::Index => {
+            let runs = if tables.iter().any(|table| table == "runs") {
+                load_table_rows(&connection, "runs", shared)
+            } else {
+                Vec::new()
+            };
+            let events = if tables.iter().any(|table| table == "run_events") {
+                load_table_rows(&connection, "run_events", shared)
+            } else {
+                Vec::new()
+            };
+            for record in records_from_sdk_index(&runs, &events, &fallback_session, &project_path) {
+                entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
+            }
         }
         _ => {
             for table in tables {
@@ -110,6 +115,33 @@ fn load_database(
         }
     }
     entries
+}
+
+fn load_table_rows(
+    connection: &sqlite::Connection,
+    table: &str,
+    shared: &SharedArgs,
+) -> Vec<Value> {
+    let mut rows = Vec::new();
+    let Ok(mut statement) = connection.prepare(format!("SELECT * FROM {table}")) else {
+        debug_log(shared, format!("Failed to read Cursor table {table}"));
+        return rows;
+    };
+    loop {
+        match statement.next() {
+            Ok(sqlite::State::Row) => {
+                if let Some(row) = row_json(&statement) {
+                    rows.push(row);
+                }
+            }
+            Ok(sqlite::State::Done) => break,
+            Err(_) => {
+                debug_log(shared, format!("Failed to query Cursor table {table}"));
+                break;
+            }
+        }
+    }
+    rows
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,16 +162,9 @@ fn load_table(
     loop {
         match statement.next() {
             Ok(sqlite::State::Row) => {
-                let names = statement.column_names().to_vec();
-                let mut row = Map::new();
-                for (index, name) in names.iter().enumerate() {
-                    if let Some(value) = cell_json(&statement, index) {
-                        row.insert(name.clone(), value);
-                    }
-                }
-                if !row.is_empty() {
+                if let Some(row) = row_json(&statement) {
                     push_records_from_value(
-                        &Value::Object(row),
+                        &row,
                         fallback_session,
                         project_path,
                         tz,
@@ -158,12 +183,61 @@ fn load_table(
     }
 }
 
-fn load_ndjson(
-    path: &Path,
+fn load_ndjson_groups(
+    paths: &[PathBuf],
     tz: Option<&JiffTimeZone>,
     shared: &SharedArgs,
     pricing: &PricingMap,
 ) -> Vec<LoadedEntry> {
+    let mut groups: BTreeMap<PathBuf, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
+    for path in paths {
+        let parent = path.parent().unwrap_or(path).to_path_buf();
+        let entry = groups.entry(parent).or_default();
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("run_events.ndjson") => entry.1 = Some(path.clone()),
+            _ => entry.0 = Some(path.clone()),
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (dir, (runs_path, events_path)) in groups {
+        let identity_path = runs_path
+            .as_deref()
+            .or(events_path.as_deref())
+            .unwrap_or(&dir);
+        let (fallback_session, project_path) = identity_from_path(identity_path);
+        let run_values = runs_path
+            .as_ref()
+            .map(|path| read_ndjson_values(path, shared))
+            .unwrap_or_default();
+        let event_values = events_path
+            .as_ref()
+            .map(|path| read_ndjson_values(path, shared))
+            .unwrap_or_default();
+        if events_path.is_some() {
+            for record in
+                records_from_sdk_index(&run_values, &event_values, &fallback_session, &project_path)
+            {
+                entries.push(record_to_loaded_entry(record, tz, shared.mode, pricing));
+            }
+        } else {
+            for value in run_values {
+                push_records_from_value(
+                    &value,
+                    &fallback_session,
+                    &project_path,
+                    tz,
+                    shared.mode,
+                    pricing,
+                    &mut entries,
+                );
+            }
+        }
+    }
+    entries
+}
+
+fn read_ndjson_values(path: &Path, shared: &SharedArgs) -> Vec<Value> {
     let Ok(text) = fs::read_to_string(path) else {
         debug_log(
             shared,
@@ -171,27 +245,32 @@ fn load_ndjson(
         );
         return Vec::new();
     };
-    let (fallback_session, project_path) = identity_from_path(path);
-    let mut entries = Vec::new();
+    let mut values = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        push_records_from_value(
-            &value,
-            &fallback_session,
-            &project_path,
-            tz,
-            shared.mode,
-            pricing,
-            &mut entries,
-        );
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            values.push(value);
+        }
     }
-    entries
+    values
+}
+
+fn row_json(statement: &sqlite::Statement<'_>) -> Option<Value> {
+    let names = statement.column_names().to_vec();
+    let mut row = Map::new();
+    for (index, name) in names.iter().enumerate() {
+        if let Some(value) = cell_json(statement, index) {
+            row.insert(name.clone(), value);
+        }
+    }
+    if row.is_empty() {
+        None
+    } else {
+        Some(Value::Object(row))
+    }
 }
 
 fn push_records_from_value(
@@ -480,5 +559,141 @@ mod tests {
         });
         let _guard = with_cursor_home(fixture.root());
         assert!(!has_data());
+    }
+
+    fn create_index_db(path: &Path, runs_sql: &str, events_sql: Option<&str>) {
+        ensure_parent(path);
+        let db = sqlite::open(path).unwrap();
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT, agent_id TEXT, model TEXT, usage TEXT, started_at INTEGER)",
+        )
+        .unwrap();
+        db.execute(runs_sql).unwrap();
+        if let Some(events_sql) = events_sql {
+            db.execute(
+                "CREATE TABLE run_events (run_id TEXT, seq INTEGER, payload_json TEXT, created_at INTEGER)",
+            )
+            .unwrap();
+            db.execute(events_sql).unwrap();
+        }
+    }
+
+    #[test]
+    fn loads_second_agent_from_run_events_when_runs_usage_is_empty() {
+        let fixture = fs_fixture!({});
+        let usage_a = r#"{"type":"usage","agent_id":"agent-a","run_id":"run-a","usage":{"inputTokens":100,"outputTokens":10,"totalTokens":110}}"#;
+        let usage_b = r#"{"type":"usage","agent_id":"agent-b","run_id":"run-b","usage":{"inputTokens":20,"outputTokens":2,"totalTokens":22}}"#;
+        create_index_db(
+            &fixture.path("projects/app/sdk-agent-store/h/index.db"),
+            r#"INSERT INTO runs (run_id, agent_id, model, usage, started_at) VALUES
+                ('run-a', 'agent-a', 'grok-4.6', '{"inputTokens":100,"outputTokens":10,"totalTokens":110}', 1750000000000),
+                ('run-b', 'agent-b', 'grok-4.6', NULL, 1750000100000)"#,
+            Some(&format!(
+                "INSERT INTO run_events (run_id, seq, payload_json, created_at) VALUES
+                    ('run-a', 1, '{usage_a}', 1750000000000),
+                    ('run-b', 1, '{usage_b}', 1750000100000)"
+            )),
+        );
+        let _guard = with_cursor_home(fixture.root());
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
+        let mut sessions: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.session_id.as_ref())
+            .collect();
+        sessions.sort_unstable();
+        assert_eq!(sessions, ["agent-a", "agent-b"]);
+        let agent_b = entries
+            .iter()
+            .find(|entry| entry.session_id.as_ref() == "agent-b")
+            .unwrap();
+        assert_eq!(agent_b.data.message.usage.input_tokens, 20);
+        assert_eq!(agent_b.data.message.usage.output_tokens, 2);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.data.message.usage.input_tokens)
+                .sum::<u64>(),
+            120
+        );
+    }
+
+    #[test]
+    fn loads_run_events_ndjson_when_runs_usage_is_empty() {
+        let fixture = fs_fixture!({});
+        let _ = fixture.write_file(
+            "projects/api/sdk-agent-store/h/runs.ndjson",
+            r#"{"runId":"run-new","agentId":"agent-new","model":{"id":"composer-2.5"},"startedAt":1750010000000}
+"#,
+        );
+        let _ = fixture.write_file(
+            "projects/api/sdk-agent-store/h/run_events.ndjson",
+            r#"{"runId":"run-new","seq":3,"createdAt":1750010000500,"payload":{"type":"usage","agent_id":"agent-new","run_id":"run-new","usage":{"inputTokens":50,"outputTokens":5,"totalTokens":55}}}
+"#,
+        );
+        let _guard = with_cursor_home(fixture.root());
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_id.as_ref(), "agent-new");
+        assert_eq!(entries[0].model.as_deref(), Some("composer-2.5"));
+        assert_eq!(entries[0].data.message.usage.input_tokens, 50);
+        assert_eq!(entries[0].data.message.usage.output_tokens, 5);
+    }
+
+    #[test]
+    fn loads_sdk_agent_store_when_index_db_is_absent() {
+        let fixture = fs_fixture!({});
+        let mut blob = vec![0x0a, 0x05];
+        blob.extend_from_slice(
+            br#"{"timestamp":1750000000000,"model":"grok-4.6","conversation_id":"agent-from-store","generation_id":"gen-store","input_tokens":30,"output_tokens":4,"cache_read_tokens":0,"cache_write_tokens":0}"#,
+        );
+        create_store_db(
+            &fixture.path("projects/app/sdk-agent-store/h/agents/deadbeef/store.db"),
+            &blob,
+            false,
+        );
+        let _guard = with_cursor_home(fixture.root());
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_id.as_ref(), "agent-from-store");
+        assert_eq!(entries[0].data.message.usage.input_tokens, 30);
+    }
+
+    #[test]
+    fn skips_sdk_agent_store_blobs_when_index_db_exists() {
+        let fixture = fs_fixture!({});
+        create_runs_db(
+            &fixture.path("projects/app/sdk-agent-store/h/index.db"),
+            r#"{"inputTokens":100,"outputTokens":20,"totalTokens":120}"#,
+        );
+        let mut blob = vec![0x0a, 0x05];
+        blob.extend_from_slice(
+            br#"{"timestamp":1750000000000,"model":"grok-4.6","conversation_id":"agent-from-store","generation_id":"gen-store","input_tokens":999,"output_tokens":9,"cache_read_tokens":0,"cache_write_tokens":0}"#,
+        );
+        create_store_db(
+            &fixture.path("projects/app/sdk-agent-store/h/agents/deadbeef/store.db"),
+            &blob,
+            false,
+        );
+        let _guard = with_cursor_home(fixture.root());
+        let shared = SharedArgs {
+            timezone: Some("UTC".to_string()),
+            ..SharedArgs::default()
+        };
+        let entries = load_entries(&shared, &PricingMap::load_embedded()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_id.as_ref(), "agent-abc");
+        assert_eq!(entries[0].data.message.usage.input_tokens, 100);
     }
 }

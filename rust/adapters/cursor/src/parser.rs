@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use jiff::tz::TimeZone as JiffTimeZone;
 use serde_json::Value;
@@ -89,6 +92,163 @@ pub(super) fn record_from_sdk_run(
         timestamp,
         message_id: run_id,
         session_id,
+        model,
+        model_id,
+        usage: parsed.usage,
+        cost_usd: parsed.cost_usd,
+        project_path: project_path.to_string(),
+    })
+}
+
+struct SdkRunMeta {
+    agent_id: String,
+    model: Option<Value>,
+    timestamp: Option<TimestampMs>,
+}
+
+/// Combine SDK `runs` rows with `run_events` usage payloads.
+///
+/// Per-turn `type: "usage"` events win over cumulative `runs.usage` for the
+/// same `run_id`, so a catalog that stores tokens only on the event stream
+/// still produces one record per agent turn without double-counting.
+pub(super) fn records_from_sdk_index(
+    runs: &[Value],
+    events: &[Value],
+    fallback_session: &str,
+    project_path: &str,
+) -> Vec<CursorUsageRecord> {
+    let mut metas = HashMap::new();
+    for run in runs {
+        let Some(run_id) = json_string(run, &["runId", "run_id"]) else {
+            continue;
+        };
+        let agent_id = json_string(run, &["agentId", "agent_id"])
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| fallback_session.to_string());
+        metas.insert(
+            run_id,
+            SdkRunMeta {
+                agent_id,
+                model: run.get("model").cloned(),
+                timestamp: timestamp_from_value(run),
+            },
+        );
+    }
+
+    let mut records = Vec::new();
+    let mut runs_with_usage_events = HashSet::new();
+    for event in events {
+        let mut payloads = Vec::new();
+        collect_usage_messages(event, &mut payloads);
+        if payloads.is_empty() {
+            continue;
+        }
+        let event_run_id = json_string(event, &["runId", "run_id"]);
+        let seq = event
+            .as_object()
+            .and_then(|object| json_u64_keys(object, &["seq", "sequence"]))
+            .unwrap_or(0);
+        for (index, payload) in payloads.into_iter().enumerate() {
+            let run_id = json_string(&payload, &["runId", "run_id"])
+                .or_else(|| event_run_id.clone())
+                .unwrap_or_else(|| fallback_session.to_string());
+            let Some(record) = record_from_usage_event(
+                &payload,
+                event,
+                metas.get(&run_id),
+                &run_id,
+                seq,
+                index,
+                fallback_session,
+                project_path,
+            ) else {
+                continue;
+            };
+            runs_with_usage_events.insert(run_id);
+            records.push(record);
+        }
+    }
+
+    for run in runs {
+        let Some(run_id) = json_string(run, &["runId", "run_id"]) else {
+            if let Some(record) = record_from_sdk_run(run, fallback_session, project_path) {
+                records.push(record);
+            }
+            continue;
+        };
+        if runs_with_usage_events.contains(&run_id) {
+            continue;
+        }
+        if let Some(record) = record_from_sdk_run(run, fallback_session, project_path) {
+            records.push(record);
+        }
+    }
+    records
+}
+
+fn collect_usage_messages(value: &Value, out: &mut Vec<Value>) {
+    if is_usage_message(value) {
+        out.push(value.clone());
+        return;
+    }
+    if let Value::String(text) = value
+        && let Ok(parsed) = serde_json::from_str::<Value>(text)
+    {
+        collect_usage_messages(&parsed, out);
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for child in map.values() {
+                collect_usage_messages(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect_usage_messages(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_usage_message(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("usage") && value.get("usage").is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_from_usage_event(
+    payload: &Value,
+    event: &Value,
+    meta: Option<&SdkRunMeta>,
+    run_id: &str,
+    seq: u64,
+    index: usize,
+    fallback_session: &str,
+    project_path: &str,
+) -> Option<CursorUsageRecord> {
+    let parsed = payload
+        .get("usage")
+        .and_then(parse_usage_value)
+        .or_else(|| parse_usage_value(payload))?;
+    let timestamp = timestamp_from_value(payload)
+        .or_else(|| timestamp_from_value(event))
+        .or_else(|| meta.and_then(|meta| meta.timestamp))?;
+    let (display, nested_model_id) = model_from_value(payload.get("model"));
+    let (meta_display, meta_model_id) = model_from_value(meta.and_then(|meta| meta.model.as_ref()));
+    let model_id = nested_model_id.or(meta_model_id);
+    let model = display
+        .or(model_id.clone())
+        .or(meta_display)
+        .filter(|model| !model.is_empty())?;
+    let session_id = json_string(payload, &["agentId", "agent_id"])
+        .or_else(|| meta.map(|meta| meta.agent_id.clone()))
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| fallback_session.to_string());
+    Some(CursorUsageRecord {
+        timestamp,
+        session_id,
+        message_id: format!("{run_id}:{seq}:{index}"),
         model,
         model_id,
         usage: parsed.usage,
@@ -722,5 +882,143 @@ mod tests {
         assert_eq!(records[0].model, "grok-4.6");
         assert_eq!(records[0].usage.input_tokens, 50);
         assert_eq!(records[0].usage.output_tokens, 5);
+    }
+
+    #[test]
+    fn sdk_index_uses_run_events_when_runs_usage_is_empty() {
+        let records = records_from_sdk_index(
+            &[serde_json::json!({
+                "run_id": "run-new",
+                "agent_id": "agent-new",
+                "model": { "id": "composer-2.5" },
+                "started_at": 1_750_010_000_000i64
+            })],
+            &[serde_json::json!({
+                "run_id": "run-new",
+                "seq": 4,
+                "created_at": 1_750_010_000_500i64,
+                "payload_json": {
+                    "type": "usage",
+                    "agent_id": "agent-new",
+                    "run_id": "run-new",
+                    "usage": {
+                        "inputTokens": 50,
+                        "outputTokens": 5,
+                        "cacheReadTokens": 0,
+                        "cacheWriteTokens": 0,
+                        "totalTokens": 55
+                    }
+                }
+            })],
+            "fallback",
+            "my-app",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].session_id, "agent-new");
+        assert_eq!(records[0].model, "composer-2.5");
+        assert_eq!(records[0].usage.input_tokens, 50);
+        assert_eq!(records[0].usage.output_tokens, 5);
+        assert_eq!(records[0].message_id, "run-new:4:0");
+        assert_eq!(records[0].project_path, "my-app");
+    }
+
+    #[test]
+    fn sdk_index_keeps_separate_agents_without_double_counting_events() {
+        let records = records_from_sdk_index(
+            &[
+                serde_json::json!({
+                    "run_id": "run-a",
+                    "agent_id": "agent-a",
+                    "model": "grok-4.6",
+                    "usage": {
+                        "inputTokens": 100,
+                        "outputTokens": 10,
+                        "totalTokens": 110
+                    },
+                    "started_at": 1_750_000_000_000i64
+                }),
+                serde_json::json!({
+                    "run_id": "run-b",
+                    "agent_id": "agent-b",
+                    "model": "grok-4.6",
+                    "started_at": 1_750_000_100_000i64
+                }),
+            ],
+            &[
+                serde_json::json!({
+                    "run_id": "run-a",
+                    "seq": 1,
+                    "created_at": 1_750_000_000_000i64,
+                    "payload_json": {
+                        "type": "usage",
+                        "agent_id": "agent-a",
+                        "run_id": "run-a",
+                        "usage": {
+                            "inputTokens": 100,
+                            "outputTokens": 10,
+                            "totalTokens": 110
+                        }
+                    }
+                }),
+                serde_json::json!({
+                    "run_id": "run-b",
+                    "seq": 1,
+                    "created_at": 1_750_000_100_000i64,
+                    "payload_json": {
+                        "type": "usage",
+                        "agent_id": "agent-b",
+                        "run_id": "run-b",
+                        "usage": {
+                            "inputTokens": 20,
+                            "outputTokens": 2,
+                            "totalTokens": 22
+                        }
+                    }
+                }),
+            ],
+            "fallback",
+            "proj",
+        );
+        assert_eq!(records.len(), 2);
+        let mut sessions: Vec<_> = records
+            .iter()
+            .map(|record| record.session_id.as_str())
+            .collect();
+        sessions.sort_unstable();
+        assert_eq!(sessions, ["agent-a", "agent-b"]);
+        let agent_a = records
+            .iter()
+            .find(|record| record.session_id == "agent-a")
+            .unwrap();
+        assert_eq!(agent_a.usage.input_tokens, 100);
+        let agent_b = records
+            .iter()
+            .find(|record| record.session_id == "agent-b")
+            .unwrap();
+        assert_eq!(agent_b.usage.input_tokens, 20);
+    }
+
+    #[test]
+    fn sdk_index_falls_back_to_runs_usage_without_events() {
+        let records = records_from_sdk_index(
+            &[serde_json::json!({
+                "runId": "run-1",
+                "agentId": "agent-abc",
+                "model": { "id": "grok-4.6" },
+                "usage": {
+                    "inputTokens": 100,
+                    "outputTokens": 20,
+                    "totalTokens": 120
+                },
+                "startedAt": 1_750_000_000_000i64
+            })],
+            &[],
+            "fallback",
+            "/workspace",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].session_id, "agent-abc");
+        assert_eq!(records[0].message_id, "run-1");
+        assert_eq!(records[0].usage.input_tokens, 100);
     }
 }
