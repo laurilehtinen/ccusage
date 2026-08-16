@@ -11,9 +11,7 @@ mod report;
 pub use loader::load_entries;
 pub use report::{report_json, summarize_entries};
 
-use crate::{
-    Result, cli::AgentCommandArgs, print_json_or_jq, print_usage_table, sort_summaries, wants_json,
-};
+use crate::{Result, cli::AgentCommandArgs, print_json_or_jq, print_usage_table, wants_json};
 
 /// Reports whether an OpenCode install has usage data, independent of the
 /// requested date window.
@@ -37,7 +35,7 @@ pub fn run(args: AgentCommandArgs) -> Result<()> {
         );
     }
     let mut rows = summarize_entries(&entries, args.kind)?;
-    sort_summaries(&mut rows, &shared.order, |row| summary_period(row));
+    sort_report_rows(&mut rows, args.kind, &shared.order);
     print_usage_table(
         "OpenCode Token Usage Report",
         first_column(args.kind),

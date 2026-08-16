@@ -467,6 +467,8 @@ ccusage daily --project my-frontend-app --json
 - `firstActivity`: RFC 3339 timestamp of first activity in the session
 - `lastActivity`: RFC 3339 timestamp of last activity in the session
 
+Session rows are ordered by `lastActivity`, oldest first, matching the table. Table output shows that timestamp as `YYYY-MM-DD HH:MM` (UTC). Pass `--order desc` to reverse the list.
+
 #### Blocks Reports
 
 - `blockStart`: ISO timestamp of block start

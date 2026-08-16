@@ -8,9 +8,7 @@ mod parser;
 mod paths;
 mod report;
 
-use crate::{
-    PricingMap, Result, cli::AgentCommandArgs, print_json_or_jq, sort_summaries, wants_json,
-};
+use crate::{PricingMap, Result, cli::AgentCommandArgs, print_json_or_jq, wants_json};
 
 pub use loader::load_entries;
 #[doc(hidden)]
@@ -27,9 +25,7 @@ pub fn run(args: AgentCommandArgs) -> Result<()> {
     let mut entries = load_entries(&shared, &pricing)?;
     filter_loaded_entries_by_date(&mut entries, &shared);
     let mut rows = summarize_entries(&entries, args.kind)?;
-    sort_summaries(&mut rows, &shared.order, |row| {
-        ccusage_core::summary_period(row)
-    });
+    sort_report_rows(&mut rows, args.kind, &shared.order);
     if wants_json(&shared) {
         return print_json_or_jq(
             report_from_rows(&rows, args.kind),

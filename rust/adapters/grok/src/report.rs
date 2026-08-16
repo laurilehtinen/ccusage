@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use serde_json::{Value, json};
 
 use crate::{
-    BucketKind, LoadedEntry, Result, SessionAccumulator,
+    BucketKind, LoadedEntry, Result,
     cli::{AgentReportKind, WeekDay},
-    summarize_by_key, summarize_summaries_by_bucket, totals_json,
+    summarize_by_key, summarize_sessions, summarize_summaries_by_bucket, totals_json,
 };
 
 pub fn report_from_rows(rows: &[crate::UsageSummary], kind: AgentReportKind) -> Value {
@@ -40,19 +38,7 @@ pub fn summarize_entries(
         // Accumulating rather than grouping by key is what carries the activity
         // range and project path onto the row, which the session table and JSON
         // both report.
-        AgentReportKind::Session => {
-            let mut groups = BTreeMap::<String, SessionAccumulator>::new();
-            for entry in entries {
-                groups
-                    .entry(entry.session_id.to_string())
-                    .or_default()
-                    .add_entry(entry);
-            }
-            groups
-                .into_values()
-                .map(SessionAccumulator::into_summary)
-                .collect()
-        }
+        AgentReportKind::Session => summarize_sessions(entries),
         AgentReportKind::Weekly => {
             let daily = summarize_entries(entries, AgentReportKind::Daily)?;
             Ok(summarize_summaries_by_bucket(

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::{
     BucketKind, LoadedEntry, Result, UsageSummary,
     cli::{AgentReportKind, WeekDay},
-    summarize_by_key, summarize_summaries_by_bucket, totals_json,
+    summarize_by_key, summarize_sessions, summarize_summaries_by_bucket, totals_json,
 };
 
 pub fn report_from_rows(rows: &[UsageSummary], kind: AgentReportKind) -> Value {
@@ -35,17 +35,7 @@ pub fn summarize_entries(
                 WeekDay::Sunday,
             ))
         }
-        AgentReportKind::Session => summarize_by_key(
-            entries,
-            |entry| entry.session_id.to_string(),
-            |session_id| (session_id.to_string(), None),
-        )
-        .map(|mut rows| {
-            for row in &mut rows {
-                row.session_id = row.date.take();
-            }
-            rows
-        }),
+        AgentReportKind::Session => summarize_sessions(entries),
         AgentReportKind::Weekly => {
             let daily = summarize_entries(entries, AgentReportKind::Daily)?;
             Ok(summarize_summaries_by_bucket(

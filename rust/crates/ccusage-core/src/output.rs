@@ -261,7 +261,7 @@ pub fn print_usage_table_with_options(
             values.pop();
         }
         if include_last_activity {
-            values.push(truncate_rfc3339_to_date(
+            values.push(format_last_activity_display(
                 row.last_activity.as_deref().unwrap_or_default(),
             ));
         }
@@ -530,8 +530,21 @@ pub fn strip_cost_json(value: &mut Value) {
     }
 }
 
-fn truncate_rfc3339_to_date(s: &str) -> String {
-    s.get(..10).unwrap_or(s).to_string()
+/// Formats a session last-activity timestamp for table display.
+///
+/// RFC3339 values keep the calendar day and clock time at minute precision
+/// (`2026-01-02 12:34`). Date-only values and empty strings are returned as-is.
+pub fn format_last_activity_display(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 16 && bytes[10] == b'T' && bytes[13] == b':' {
+        let mut display = String::with_capacity(16);
+        display.push_str(&value[..10]);
+        display.push(' ');
+        display.push_str(&value[11..16]);
+        display
+    } else {
+        value.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -566,6 +579,16 @@ mod tests {
     #[test]
     fn empty_usage_table_message_is_provider_agnostic() {
         assert_eq!(empty_usage_table_message(), "No usage data found.");
+    }
+
+    #[test]
+    fn last_activity_display_includes_day_and_time() {
+        assert_eq!(
+            format_last_activity_display("2026-01-02T12:34:56.000Z"),
+            "2026-01-02 12:34"
+        );
+        assert_eq!(format_last_activity_display("2026-05-16"), "2026-05-16");
+        assert_eq!(format_last_activity_display(""), "");
     }
 
     #[test]

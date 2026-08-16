@@ -5,9 +5,9 @@ use serde_json::{Value, json};
 use crate::{
     Align, CodexGroup, CodexModelUsage, CodexServiceTier, CodexUsageBucket, Color, PricingMap,
     Result, SimpleTable,
-    cli::{AgentReportKind, SharedArgs},
-    color, format_currency, format_models_multiline, format_number, json_float,
-    missing_pricing_model_for_token_total, print_box_title,
+    cli::{AgentReportKind, SharedArgs, SortOrder},
+    color, format_currency, format_last_activity_display, format_models_multiline, format_number,
+    json_float, missing_pricing_model_for_token_total, print_box_title,
     print_missing_pricing_warnings_for_models,
 };
 
@@ -18,9 +18,10 @@ pub(super) fn report_from_groups(
     kind: AgentReportKind,
     pricing: &PricingMap,
     speed: CodexSpeedPolicy,
+    order: &SortOrder,
 ) -> Value {
-    let rows = groups
-        .iter()
+    let rows = iter_groups(groups, kind, order)
+        .into_iter()
         .map(|(period, group)| group_json(period, group, kind, pricing, speed))
         .collect::<Vec<_>>();
     let totals = totals_json(groups.values(), pricing, speed);
@@ -28,6 +29,27 @@ pub(super) fn report_from_groups(
         rows_key(kind): rows,
         "totals": totals,
     })
+}
+
+fn iter_groups<'a>(
+    groups: &'a BTreeMap<String, CodexGroup>,
+    kind: AgentReportKind,
+    order: &SortOrder,
+) -> Vec<(&'a String, &'a CodexGroup)> {
+    let mut rows: Vec<_> = groups.iter().collect();
+    if kind == AgentReportKind::Session {
+        rows.sort_by(|a, b| {
+            a.1.last_activity
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.1.last_activity.as_deref().unwrap_or(""))
+                .then_with(|| a.0.cmp(b.0))
+        });
+        if *order == SortOrder::Desc {
+            rows.reverse();
+        }
+    }
+    rows
 }
 
 fn rows_key(kind: AgentReportKind) -> &'static str {
@@ -313,6 +335,11 @@ pub(super) fn print_table_from_groups(
         headers.pop();
         aligns.pop();
     }
+    let include_last_activity = kind == AgentReportKind::Session;
+    if include_last_activity {
+        headers.push("Last Activity");
+        aligns.push(Align::Left);
+    }
     let mut table = SimpleTable::new(headers, aligns, crate::terminal_style(shared))
         .with_terminal_width(crate::terminal_width())
         .with_date_compaction(true);
@@ -322,7 +349,7 @@ pub(super) fn print_table_from_groups(
     let mut total_reasoning = 0;
     let mut total_tokens = 0;
     let mut total_cost = 0.0;
-    for (label, group) in groups {
+    for (label, group) in iter_groups(groups, kind, &shared.order) {
         let input_tokens = non_cached_input_tokens(group.input_tokens, group.cached_input_tokens);
         let cost = calculate_group_cost(group, pricing, speed);
         total_input += input_tokens;
@@ -345,6 +372,11 @@ pub(super) fn print_table_from_groups(
         if shared.no_cost {
             row.pop();
         }
+        if include_last_activity {
+            row.push(format_last_activity_display(
+                group.last_activity.as_deref().unwrap_or(""),
+            ));
+        }
         table.push(row);
     }
     table.separator();
@@ -360,6 +392,9 @@ pub(super) fn print_table_from_groups(
     ];
     if shared.no_cost {
         total_row.pop();
+    }
+    if include_last_activity {
+        total_row.push(String::new());
     }
     table.push(total_row);
     table.print()?;

@@ -89,11 +89,15 @@ ccusage daily --mode display
 Control the ordering of results:
 
 ```bash
-# Newest first (default)
+# Newest first
 ccusage daily --order desc
 
 # Oldest first
 ccusage daily --order asc
+
+# Session reports default to oldest first so the newest session is at the bottom
+ccusage session --order asc
+ccusage session --order desc
 ```
 
 ### Offline Mode
