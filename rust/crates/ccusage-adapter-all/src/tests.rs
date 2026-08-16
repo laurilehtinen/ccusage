@@ -560,6 +560,7 @@ fn isolated_agent_env(
         "KIMI_DATA_DIR",
         "QWEN_DATA_DIR",
         "GROK_HOME",
+        "CURSOR_AGENT_HOME",
     ]
     .into_iter()
     .map(|key| (key, None::<OsString>))
@@ -603,6 +604,41 @@ fn unified_daily_rows_use_grok_home() {
 #[test]
 fn unified_session_rows_use_grok_home() {
     assert_unified_rows_use_grok_home(AgentReportKind::Session);
+}
+
+fn assert_unified_rows_use_cursor_home(kind: AgentReportKind) {
+    let line = r#"{"runId":"run-cursor","agentId":"agent-cursor","model":"grok-4.6","usage":{"inputTokens":100,"outputTokens":20,"cacheReadTokens":40,"cacheWriteTokens":10,"totalTokens":170},"startedAt":1750000000000}"#;
+    let fixture = fs_fixture!({
+        "cursor/projects/my-app/sdk-agent-store/hash1/runs.ndjson": line,
+    });
+    let _env = isolated_agent_env(
+        &fixture,
+        "CURSOR_AGENT_HOME",
+        fixture.path("cursor").into_os_string(),
+    );
+    let shared = fixture_shared("20250615", "20250615");
+
+    let result = loader::load_rows(kind, &shared).unwrap();
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.detected_agents, vec!["cursor"]);
+    assert_eq!(
+        result.rows[0].metadata_agents,
+        (kind != AgentReportKind::Session).then_some(vec!["cursor"])
+    );
+    assert_eq!(result.rows[0].input_tokens, 100);
+    assert_eq!(result.rows[0].cache_read_tokens, 40);
+    assert_eq!(result.rows[0].output_tokens, 20);
+}
+
+#[test]
+fn unified_daily_rows_use_cursor_home() {
+    assert_unified_rows_use_cursor_home(AgentReportKind::Daily);
+}
+
+#[test]
+fn unified_session_rows_use_cursor_home() {
+    assert_unified_rows_use_cursor_home(AgentReportKind::Session);
 }
 
 fn assert_daily_family_and_session_sections_match_standalone(shared: &SharedArgs) {

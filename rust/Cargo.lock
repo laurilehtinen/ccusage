@@ -126,6 +126,7 @@ dependencies = [
  "ccusage-adapter-codex",
  "ccusage-adapter-common",
  "ccusage-adapter-copilot",
+ "ccusage-adapter-cursor",
  "ccusage-adapter-droid",
  "ccusage-adapter-gemini",
  "ccusage-adapter-goose",
@@ -158,6 +159,7 @@ dependencies = [
  "ccusage-adapter-codex",
  "ccusage-adapter-common",
  "ccusage-adapter-copilot",
+ "ccusage-adapter-cursor",
  "ccusage-adapter-droid",
  "ccusage-adapter-gemini",
  "ccusage-adapter-goose",
@@ -250,6 +252,20 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ccusage-adapter-cursor"
+version = "0.0.0"
+dependencies = [
+ "ccusage-adapter-common",
+ "ccusage-core",
+ "ccusage-test-support",
+ "jiff",
+ "memchr",
+ "serde",
+ "serde_json",
+ "sqlite",
 ]
 
 [[package]]

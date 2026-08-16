@@ -44,6 +44,8 @@ pub struct CcusageConfig {
     pub kilo: Option<KiloConfig>,
     /// GitHub Copilot CLI configuration.
     pub copilot: Option<CopilotConfig>,
+    /// Cursor CLI configuration.
+    pub cursor: Option<CursorConfig>,
     /// Gemini CLI configuration.
     pub gemini: Option<GeminiConfig>,
     /// Kimi configuration.
@@ -256,6 +258,21 @@ pub struct CopilotConfig {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CopilotCommandsConfig {
+    pub daily: Option<SharedOptions>,
+    pub monthly: Option<SharedOptions>,
+    pub session: Option<SharedOptions>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorConfig {
+    pub defaults: Option<SharedOptions>,
+    pub commands: Option<CursorCommandsConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorCommandsConfig {
     pub daily: Option<SharedOptions>,
     pub monthly: Option<SharedOptions>,
     pub session: Option<SharedOptions>,
@@ -1093,6 +1110,7 @@ mod tests {
             &with_keys(&shared, &["openClawPath"]),
         );
         assert_schema_properties(&schema, &["grok", "defaults"], &shared);
+        assert_schema_properties(&schema, &["cursor", "defaults"], &shared);
     }
 
     #[test]
@@ -1113,6 +1131,7 @@ mod tests {
         assert!(schema_property(&schema, &["kimi", "defaults", "openClawPath"]).is_none());
         assert!(schema_property(&schema, &["qwen", "defaults", "openClawPath"]).is_none());
         assert!(schema_property(&schema, &["grok", "defaults", "grokPath"]).is_none());
+        assert!(schema_property(&schema, &["cursor", "defaults", "cursorPath"]).is_none());
         assert!(schema_property(&schema, &["openclaw", "defaults", "grokPath"]).is_none());
     }
 
@@ -1146,9 +1165,9 @@ mod tests {
             &schema,
             "ccusage-config",
             &[
-                "$schema", "amp", "claude", "codebuff", "codex", "commands", "copilot", "defaults",
-                "droid", "gemini", "goose", "grok", "hermes", "kilo", "kimi", "opencode",
-                "openclaw", "pi", "qwen",
+                "$schema", "amp", "claude", "codebuff", "codex", "commands", "copilot", "cursor",
+                "defaults", "droid", "gemini", "goose", "grok", "hermes", "kilo", "kimi",
+                "opencode", "openclaw", "pi", "qwen",
             ],
         );
         assert!(
@@ -1431,6 +1450,7 @@ mod tests {
             "piDefaults": schema_node(&schema, &["pi", "defaults"]),
             "openclawDefaults": schema_node(&schema, &["openclaw", "defaults"]),
             "grokDefaults": schema_node(&schema, &["grok", "defaults"]),
+            "cursorDefaults": schema_node(&schema, &["cursor", "defaults"]),
         }));
     }
 

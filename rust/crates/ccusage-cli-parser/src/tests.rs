@@ -205,6 +205,7 @@ fn command_snapshot(command: Option<Command>) -> Value {
         Some(Command::Qwen(args)) => agent_command_snapshot("qwen", args),
         Some(Command::OpenClaw(args)) => agent_command_snapshot("openclaw", args),
         Some(Command::Grok(args)) => agent_command_snapshot("grok", args),
+        Some(Command::Cursor(args)) => agent_command_snapshot("cursor", args),
     }
 }
 
@@ -647,7 +648,7 @@ fn root_help_lists_agent_namespaces_without_nested_commands() {
     let help = help_text();
     let agents = [
         "claude", "codex", "opencode", "amp", "droid", "codebuff", "hermes", "pi", "goose", "kilo",
-        "copilot", "gemini", "kimi", "qwen", "openclaw", "grok",
+        "copilot", "gemini", "kimi", "qwen", "openclaw", "grok", "cursor",
     ];
 
     for agent in agents {
@@ -745,6 +746,17 @@ fn grok_help_does_not_advertise_path_option() {
     ]);
 
     assert!(!help.contains("--grok-path"));
+}
+
+#[test]
+fn cursor_help_does_not_advertise_path_option() {
+    let help = help_text_for_args(&[
+        "ccusage".to_string(),
+        "cursor".to_string(),
+        "daily".to_string(),
+    ]);
+
+    assert!(!help.contains("--cursor-path"));
 }
 
 #[test]
@@ -862,6 +874,10 @@ fn snapshots_representative_cli_parse_shapes() {
         json!({
             "case": "grok daily",
             "cli": cli_snapshot(parse(&["ccusage", "grok", "daily", "--json"])),
+        }),
+        json!({
+            "case": "cursor daily",
+            "cli": cli_snapshot(parse(&["ccusage", "cursor", "daily", "--json"])),
         }),
         json!({
             "case": "blocks active recent",
@@ -1256,6 +1272,29 @@ fn rejects_grok_path_option() {
     let error = parse_error(&["ccusage", "grok", "daily", "--grok-path", "/tmp/grok-home"]);
 
     assert_eq!(error, "Unknown option '--grok-path'");
+}
+
+#[test]
+fn parses_cursor_daily_options() {
+    let cli = parse(&["ccusage", "cursor", "daily", "--json"]);
+    let Some(Command::Cursor(args)) = cli.command else {
+        panic!("expected cursor command");
+    };
+    assert_eq!(args.kind, AgentReportKind::Daily);
+    assert!(args.shared.json);
+}
+
+#[test]
+fn rejects_cursor_path_option() {
+    let error = parse_error(&[
+        "ccusage",
+        "cursor",
+        "daily",
+        "--cursor-path",
+        "/tmp/cursor-home",
+    ]);
+
+    assert_eq!(error, "Unknown option '--cursor-path'");
 }
 
 #[test]

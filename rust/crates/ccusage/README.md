@@ -25,6 +25,7 @@ source in its own `ccusage-adapter-*` crate.
 - `ccusage-adapter-codex`
 - `ccusage-adapter-common`
 - `ccusage-adapter-copilot`
+- `ccusage-adapter-cursor`
 - `ccusage-adapter-droid`
 - `ccusage-adapter-gemini`
 - `ccusage-adapter-goose`

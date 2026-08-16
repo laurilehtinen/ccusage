@@ -47,6 +47,15 @@ LiteLLM estimates as the fallback. In-progress turns count only after
 `turn_completed`. See [Grok Build CLI](/guide/grok/).
 :::
 
+::: details Cursor CLI
+Cursor Agent CLI and the Cursor SDK are supported when they persist token
+counts locally. ccusage reads `${CURSOR_AGENT_HOME:-~/.cursor}/chats/**/store.db`,
+`acp-sessions/**/store.db`, and `projects/*/sdk-agent-store/*/index.db` (plus
+optional `runs.ndjson`). Agent transcripts under `agent-transcripts/` are
+conversation text only and are ignored. The Cursor Admin API is not used.
+Turns without recorded token counts are skipped. See [Cursor CLI](/guide/cursor/).
+:::
+
 ## Can These Be Added Later?
 
 Yes. Open an issue if a tool starts writing local usage data with token counts or exposes an official export. Useful examples include:

@@ -1016,6 +1016,27 @@ mod tests {
     }
 
     #[test]
+    fn cursor_namespace_keeps_shared_report_options() {
+        let config = context(
+            json!({
+                "cursor": {
+                    "defaults": { "offline": true },
+                    "commands": { "session": { "json": true } }
+                }
+            }),
+            "cursor session",
+            Some("cursor"),
+            "session",
+        );
+        let mut shared = SharedArgs::default();
+
+        apply_config_to_shared(&mut shared, &config);
+
+        assert!(shared.offline);
+        assert!(shared.json);
+    }
+
+    #[test]
     fn merge_pricing_overrides_field_level_preserves_parent_fields() {
         use crate::config_schema::ConfigPricingOverride;
         use ccusage_cli::PricingOverride;

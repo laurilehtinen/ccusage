@@ -104,6 +104,10 @@
 			{
 				"name": "grok",
 				"description": "Show Grok Build CLI usage commands"
+			},
+			{
+				"name": "cursor",
+				"description": "Show Cursor CLI usage commands"
 			}
 		]
 	},
@@ -774,6 +778,43 @@
 			"path": ["grok", "session"],
 			"description": "Show Grok Build CLI usage grouped by session",
 			"usage": "ccusage grok session <OPTIONS>",
+			"options": "agent_options"
+		},
+		{
+			"path": ["cursor"],
+			"description": "Usage reports for Cursor CLI.",
+			"usage": "ccusage cursor <COMMANDS>",
+			"commands": [
+				{
+					"name": "daily",
+					"description": "Show Cursor CLI usage grouped by date"
+				},
+				{
+					"name": "monthly",
+					"description": "Show Cursor CLI usage grouped by month"
+				},
+				{
+					"name": "session",
+					"description": "Show Cursor CLI usage grouped by session"
+				}
+			]
+		},
+		{
+			"path": ["cursor", "daily"],
+			"description": "Show Cursor CLI usage grouped by date",
+			"usage": "ccusage cursor daily <OPTIONS>",
+			"options": "agent_period_options"
+		},
+		{
+			"path": ["cursor", "monthly"],
+			"description": "Show Cursor CLI usage grouped by month",
+			"usage": "ccusage cursor monthly <OPTIONS>",
+			"options": "agent_period_options"
+		},
+		{
+			"path": ["cursor", "session"],
+			"description": "Show Cursor CLI usage grouped by session",
+			"usage": "ccusage cursor session <OPTIONS>",
 			"options": "agent_options"
 		}
 	]
