@@ -399,7 +399,9 @@ ccusage blocks --config /path/to/team-config.json
 
 ## Pricing Overrides
 
-ccusage looks up token costs from a LiteLLM pricing snapshot embedded in the binary, optionally refreshed at runtime (or skipped with `--offline`). When a model is missing from LiteLLM (private deployments, internal wrappers like Pi's `[pi] gpt-5.4`, custom proxies), or when the snapshot price differs from your contract, set `pricingOverrides` under `defaults` to supply per-model values.
+ccusage looks up token costs from a LiteLLM pricing snapshot embedded in the binary, optionally refreshed at runtime (or skipped with `--offline`). A small `estimated-pricing.json` table in the binary fills models that public vendor pages list but LiteLLM does not yet publish, such as Cursor Composer 2.5. Those estimates are USD per million tokens, keyed by the unprefixed model id (`composer-2.5`) plus common aliases (`cursor/composer-2-5`, Fast variants). The table is hand-maintained next to the other pricing snapshots; edit it when a vendor changes the published rates, or set `pricingOverrides` to replace them locally.
+
+When a model is missing from both LiteLLM and that estimate table (private deployments, internal wrappers, custom proxies), or when the snapshot price differs from your contract, set `pricingOverrides` under `defaults` to supply per-model values.
 
 ```json
 {
@@ -410,6 +412,11 @@ ccusage looks up token costs from a LiteLLM pricing snapshot embedded in the bin
 				"inputCostPerToken": 0.0000025,
 				"outputCostPerToken": 0.000015,
 				"cacheReadInputTokenCost": 0.00000025
+			},
+			"composer-2.5": {
+				"inputCostPerToken": 0.000003,
+				"outputCostPerToken": 0.000015,
+				"cacheReadInputTokenCost": 0.0000005
 			},
 			"my-private-claude": {
 				"inputCostPerToken": 0.000003,
@@ -423,15 +430,15 @@ ccusage looks up token costs from a LiteLLM pricing snapshot embedded in the bin
 
 ### Raw Model Names
 
-Keys in `pricingOverrides` must match the **raw model name** as recorded in the source logs, including any adapter prefix:
+Keys in `pricingOverrides` may be the **raw model name** as recorded in the source logs, including any adapter prefix, or the unprefixed id. Lookup strips a leading `[agent] ` label (for example `[pi] composer-2.5` → `composer-2.5`) after trying the recorded spelling, so both of these work:
 
-| Adapter                                | Prefix    | Example key                    |
-| -------------------------------------- | --------- | ------------------------------ |
-| Pi                                     | `[pi] `   | `[pi] gpt-5.4`                 |
-| Named Pi store                         | `[name] ` | `[omp] gpt-5.4`                |
-| Others (Claude, Codex, OpenCode, etc.) | none      | `claude-sonnet-4-5`, `gpt-5.5` |
+| Adapter                                | Prefix    | Example keys                                      |
+| -------------------------------------- | --------- | ------------------------------------------------- |
+| Pi                                     | `[pi] `   | `[pi] gpt-5.4`, `gpt-5.4`, `[pi] composer-2.5`    |
+| Named Pi store                         | `[name] ` | `[omp] gpt-5.4`, `gpt-5.4`                        |
+| Others (Claude, Codex, OpenCode, etc.) | none      | `claude-sonnet-4-5`, `gpt-5.5`, `composer-2.5`    |
 
-To find the exact name, run `ccusage <agent> daily --json` and look at the `model` field in the per-row breakdown.
+A prefixed key wins only for that spelling, so `[pi] composer-2.5` can override Pi without changing Cursor's `composer-2.5` rate. To find the exact name, run `ccusage <agent> daily --json` and look at the `model` field in the per-row breakdown.
 
 ### Supported Fields
 

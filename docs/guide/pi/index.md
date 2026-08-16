@@ -46,6 +46,16 @@ Tools built on the pi session format can also be declared as named stores in the
 
 Named stores are loaded in addition to the default `pi` agent when running `ccusage daily`, `ccusage monthly`, `ccusage weekly`, or `ccusage session`. The example above appears as agent `omp` in unified report metadata and prefixes model labels with `[omp]` followed by a space. A named store path can also be a comma-separated list of sessions directories; missing paths are treated as empty, while paths that overlap the default `pi` store or another named store — including one path nested inside another — are rejected to avoid double-counting. It does not add a `ccusage omp` command; use `ccusage pi ...` for the default pi-agent store.
 
+Model ids in Pi session files are shown with that store prefix (`[pi] composer-2.5`, `[omp] gpt-5.4`). If a log already stored a `[name] …` label, ccusage keeps a single prefix instead of wrapping it again. Pricing lookup strips the prefix after trying the recorded spelling, so `[pi] gpt-5.4` uses the same LiteLLM rates as `gpt-5.4`.
+
+## Pricing
+
+Pi rows often include a `cost.total` display value. `auto` uses that when present; `calculate` always prices from token counts.
+
+Models that LiteLLM does not list, such as Cursor Composer 2.5 (`composer-2.5`, `cursor/composer-2-5`, and Fast variants), use estimated public rates from [Cursor's model page](https://cursor.com/docs/models-and-pricing). Those estimates live in `estimated-pricing.json` and can be replaced with [`pricingOverrides`](/guide/config-files#pricing-overrides) if the vendor changes them. Standard Composer 2.5 is $0.50 / $2.50 per million input / output tokens (cache read $0.20); Fast is $3 / $15 (cache read $0.50). A `:fast` suffix on the recorded id selects the Fast estimate; `:slow` keeps the standard estimate.
+
+If a model has neither a LiteLLM entry, an estimate, nor a `pricingOverrides` value, the calculated cost stays at $0.00 and a missing-pricing warning may appear.
+
 ## Report Views
 
 ```bash
