@@ -12,6 +12,11 @@
 				"inputCostPerToken": 0.0000025,
 				"outputCostPerToken": 0.000015,
 				"cacheReadInputTokenCost": 0.00000025
+			},
+			"composer-2.5": {
+				"inputCostPerToken": 0.000003,
+				"outputCostPerToken": 0.000015,
+				"cacheReadInputTokenCost": 0.0000005
 			}
 		}
 	},

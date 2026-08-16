@@ -8,7 +8,9 @@ neither has a consumer outside it.
 ## Owns
 
 - `pricing.rs` — the `PricingMap`, the embedded models.dev and LiteLLM snapshots,
-  the built-in rate tables, and the optional runtime fetch. models.dev repeats
+  the built-in rate tables, estimated public rates for models LiteLLM does not
+  list (`src/estimated-pricing.json`, hand-maintained USD per million tokens),
+  and the optional runtime fetch. models.dev repeats
   every model once per catalog that serves it, so
   `models-dev-catalog-rules.json` carries what a live `api.json` response does
   not say: which catalogs author models, which only resell them, which model ids

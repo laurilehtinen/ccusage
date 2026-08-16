@@ -1,0 +1,26 @@
+{
+	"source": "https://cursor.com/docs/models-and-pricing",
+	"models": {
+		"composer-2.5": {
+			"input": 0.5,
+			"output": 2.5,
+			"cache_read": 0.2,
+			"aliases": [
+				"composer-2-5",
+				"cursor/composer-2.5",
+				"cursor/composer-2-5"
+			]
+		},
+		"composer-2.5-fast": {
+			"input": 3.0,
+			"output": 15.0,
+			"cache_read": 0.5,
+			"exact_only": true,
+			"aliases": [
+				"composer-2-5-fast",
+				"cursor/composer-2.5-fast",
+				"cursor/composer-2-5-fast"
+			]
+		}
+	}
+}

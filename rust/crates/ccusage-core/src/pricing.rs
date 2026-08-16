@@ -23,6 +23,7 @@ const MODELS_DEV_CATALOG_RULES_DEFLATE: &[u8] = include_bytes!(concat!(
     "/models-dev-catalog-rules.json.deflate"
 ));
 const FAST_MULTIPLIER_OVERRIDES_JSON: &str = include_str!("fast-multiplier-overrides.json");
+const ESTIMATED_PRICING_JSON: &str = include_str!("estimated-pricing.json");
 
 /// Inflate one of the deflated snapshots above. Infallible by construction:
 /// build.rs produced the bytes from JSON it had just serialized.
@@ -601,6 +602,28 @@ struct FastMultiplierOverrides {
     normalized_prefix: FxHashMap<String, f64>,
 }
 
+/// Hand-maintained USD-per-million rates for models public vendor pages list
+/// but LiteLLM does not. Loaded only into vacant keys so a later snapshot that
+/// starts publishing the model wins, and `pricingOverrides` still has the
+/// final word when a vendor changes the published numbers.
+#[derive(Debug, Deserialize)]
+struct EstimatedPricingFile {
+    models: FxHashMap<String, EstimatedModelPricing>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EstimatedModelPricing {
+    input: f64,
+    output: f64,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    exact_only: bool,
+    max_input_tokens: Option<u64>,
+}
+
 impl FastMultiplierOverrides {
     fn load() -> Self {
         serde_json::from_str(FAST_MULTIPLIER_OVERRIDES_JSON)
@@ -633,6 +656,7 @@ impl PricingMap {
         let fast_multiplier_overrides = FastMultiplierOverrides::load();
         map.load_json_with_overrides(build_time_pricing_json(), &fast_multiplier_overrides);
         map.put_builtin_pricing(&fast_multiplier_overrides);
+        map.put_estimated_pricing();
         map.fill_long_context_rates_from_models_dev();
         // Resolve models that LiteLLM and the built-in table miss from the
         // embedded models.dev snapshot. This works offline, unlike the network
@@ -672,8 +696,10 @@ impl PricingMap {
 
         // A live LiteLLM refresh replaces whole entries, so re-apply the
         // built-in long-context rates it does not publish before user
-        // overrides get the final word.
+        // overrides get the final word. Estimated public rates refill only
+        // keys the refresh still does not list.
         map.fill_long_context_rates_from_models_dev();
+        map.put_estimated_pricing();
         map.enable_models_dev_fallback = !offline;
         map.apply_overrides(overrides);
         map
@@ -983,36 +1009,7 @@ impl PricingMap {
         }
         // Full lookup (dropped the lock above so concurrent callers are not
         // serialized on the expensive fuzzy path).
-        let alias = crate::model_aliases::resolve_model_name(model);
-        let resolved_alias = alias.as_ref();
-        let fuzzy = self.allows_fuzzy_lookup(model, resolved_alias);
-        let result = self
-            .find_entry_or_alias(model, fuzzy)
-            .or_else(|| {
-                (resolved_alias != model)
-                    .then(|| self.find_entry_or_alias(resolved_alias, Fuzzy::Allowed))
-                    .flatten()
-            })
-            .or_else(|| {
-                self.enable_models_dev_fallback
-                    .then(|| {
-                        models_dev_pricing().and_then(|pricing| {
-                            pricing.find_entry_or_alias(resolved_alias, Fuzzy::Allowed)
-                        })
-                    })
-                    .flatten()
-            })
-            // The embedded models.dev snapshot is a separate map, so it only
-            // resolves models the primary table misses and never perturbs its
-            // fuzzy alias matching. It works offline, unlike the network source.
-            .or_else(|| {
-                self.enable_embedded_models_dev_fallback
-                    .then(|| {
-                        embedded_models_dev_pricing()
-                            .find_entry_or_alias(resolved_alias, Fuzzy::Allowed)
-                    })
-                    .flatten()
-            });
+        let result = self.lookup_model_value(model, Self::exact_pricing, Self::fuzzy_pricing);
         // Store the result (including None for misses) so repeated lookups
         // for the same model that fails to match any pricing entry are also
         // short-circuited.
@@ -1103,6 +1100,80 @@ impl PricingMap {
     }
 
     pub fn context_limit(&self, model: &str) -> Option<u64> {
+        self.lookup_model_value(model, Self::exact_context_limit, Self::fuzzy_context_limit)
+    }
+
+    fn lookup_model_value<T, Exact, FuzzyLookup>(
+        &self,
+        model: &str,
+        exact: Exact,
+        fuzzy: FuzzyLookup,
+    ) -> Option<T>
+    where
+        Exact: Fn(&Self, &str) -> Option<T>,
+        FuzzyLookup: Fn(&Self, &str) -> Option<T>,
+    {
+        let names = lookup_names(model);
+        names.iter().find_map(|name| exact(self, name)).or_else(|| {
+            names
+                .iter()
+                .filter(|name| strip_adapter_prefix(name).is_none())
+                .find_map(|name| fuzzy(self, name))
+        })
+    }
+
+    fn exact_pricing(&self, model: &str) -> Option<Pricing> {
+        let alias = crate::model_aliases::resolve_model_name(model);
+        self.find_entry_or_alias(model, Fuzzy::Denied).or_else(|| {
+            (alias.as_ref() != model)
+                .then(|| self.find_entry_or_alias(alias.as_ref(), Fuzzy::Denied))
+                .flatten()
+        })
+    }
+
+    fn fuzzy_pricing(&self, model: &str) -> Option<Pricing> {
+        let alias = crate::model_aliases::resolve_model_name(model);
+        let resolved_alias = alias.as_ref();
+        let fuzzy = self.allows_fuzzy_lookup(model, resolved_alias);
+        self.find_entry_or_alias(model, fuzzy)
+            .or_else(|| {
+                (resolved_alias != model)
+                    .then(|| self.find_entry_or_alias(resolved_alias, Fuzzy::Allowed))
+                    .flatten()
+            })
+            .or_else(|| {
+                self.enable_models_dev_fallback
+                    .then(|| {
+                        models_dev_pricing().and_then(|pricing| {
+                            pricing.find_entry_or_alias(resolved_alias, Fuzzy::Allowed)
+                        })
+                    })
+                    .flatten()
+            })
+            // The embedded models.dev snapshot is a separate map, so it only
+            // resolves models the primary table misses and never perturbs its
+            // fuzzy alias matching. It works offline, unlike the network source.
+            .or_else(|| {
+                self.enable_embedded_models_dev_fallback
+                    .then(|| {
+                        embedded_models_dev_pricing()
+                            .find_entry_or_alias(resolved_alias, Fuzzy::Allowed)
+                    })
+                    .flatten()
+            })
+    }
+
+    fn exact_context_limit(&self, model: &str) -> Option<u64> {
+        let alias = crate::model_aliases::resolve_model_name(model);
+        self.context_limit_entry_or_alias(model, Fuzzy::Denied)
+            .or_else(|| {
+                (alias.as_ref() != model)
+                    .then(|| self.context_limit_entry_or_alias(alias.as_ref(), Fuzzy::Denied))
+                    .flatten()
+            })
+    }
+
+    fn fuzzy_context_limit(&self, model: &str) -> Option<u64> {
         let alias = crate::model_aliases::resolve_model_name(model);
         let resolved_alias = alias.as_ref();
         let fuzzy = self.allows_fuzzy_lookup(model, resolved_alias);
@@ -1329,6 +1400,27 @@ impl PricingMap {
 
     fn put_builtin_entry(&mut self, model: String, pricing: Pricing) {
         self.entries.entry(model).or_insert(pricing);
+    }
+
+    fn put_estimated_pricing(&mut self) {
+        let file: EstimatedPricingFile = serde_json::from_str(ESTIMATED_PRICING_JSON)
+            .expect("parse embedded estimated-pricing.json");
+        for (model, spec) in file.models {
+            let pricing = estimated_model_pricing(&spec);
+            for key in std::iter::once(model).chain(spec.aliases) {
+                if key.is_empty() || self.entries.contains_key(&key) {
+                    continue;
+                }
+                if spec.exact_only {
+                    self.exact_only.insert(key.clone());
+                }
+                if let Some(limit) = spec.max_input_tokens {
+                    self.context_limits.insert(key.clone(), limit);
+                }
+                self.entries.insert(key, pricing);
+            }
+        }
+        self.clear_find_cache();
     }
 
     /// z.ai's catalog needs one provider fact LiteLLM does not publish: GLM
@@ -2077,6 +2169,97 @@ fn pricing_alias(model: &str) -> Option<&'static str> {
     }
 }
 
+fn estimated_model_pricing(spec: &EstimatedModelPricing) -> Pricing {
+    let input = spec.input / 1_000_000.0;
+    let output = spec.output / 1_000_000.0;
+    let cache_read_explicit = spec.cache_read.is_some();
+    let cache_create_explicit = spec.cache_write.is_some();
+    Pricing {
+        input,
+        output,
+        cache_create: spec
+            .cache_write
+            .map(|value| value / 1_000_000.0)
+            .unwrap_or(input * 1.25),
+        cache_read: spec
+            .cache_read
+            .map(|value| value / 1_000_000.0)
+            .unwrap_or(input * 0.1),
+        cache_read_explicit,
+        cache_create_explicit,
+        input_above_200k: None,
+        output_above_200k: None,
+        cache_create_above_200k: None,
+        cache_read_above_200k: None,
+        long_context_threshold: None,
+        fast_multiplier: 1.0,
+    }
+}
+
+/// Spellings a recorded model id may be looked up under, most specific first.
+///
+/// Adapters such as Pi display `[pi] composer-2.5` while pricing tables key the
+/// unprefixed id. Exact matches on the recorded spelling still win, so a
+/// `pricingOverrides` entry for `[pi] composer-2.5` is not shadowed by the
+/// unprefixed estimate.
+fn lookup_names(model: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    push_unique_name(&mut names, model.to_string());
+    let mut index = 0;
+    while index < names.len() {
+        let name = names[index].clone();
+        index += 1;
+        let alias = crate::model_aliases::resolve_model_name(&name);
+        if alias.as_ref() != name.as_str() {
+            push_unique_name(&mut names, alias.into_owned());
+        }
+        if let Some(stripped) = strip_adapter_prefix(&name) {
+            push_unique_name(&mut names, stripped.to_string());
+        }
+        if let Some(stripped) = strip_slow_suffix(&name) {
+            push_unique_name(&mut names, stripped.to_string());
+        }
+        if let Some(fast) = rewrite_colon_fast_suffix(&name) {
+            push_unique_name(&mut names, fast);
+        }
+    }
+    names
+}
+
+fn push_unique_name(names: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !names.iter().any(|existing| existing == &value) {
+        names.push(value);
+    }
+}
+
+/// Strips a leading `[agent] ` display prefix adapters add to model ids.
+fn strip_adapter_prefix(model: &str) -> Option<&str> {
+    let rest = model.strip_prefix('[')?;
+    let (prefix, rest) = rest.split_once(']')?;
+    if prefix.is_empty()
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    let name = rest.strip_prefix(' ').unwrap_or(rest).trim();
+    (!name.is_empty()).then_some(name)
+}
+
+fn strip_slow_suffix(model: &str) -> Option<&str> {
+    model
+        .strip_suffix(":slow")
+        .or_else(|| model.strip_suffix("-slow"))
+        .map(str::trim_end)
+        .filter(|name| !name.is_empty())
+}
+
+fn rewrite_colon_fast_suffix(model: &str) -> Option<String> {
+    let base = model.strip_suffix(":fast")?.trim_end();
+    (!base.is_empty()).then(|| format!("{base}-fast"))
+}
+
 fn matches_model_suffix(part: &str, base: &str) -> bool {
     let Some(index) = part.rfind(base) else {
         return false;
@@ -2298,6 +2481,161 @@ mod tests {
         // Gating keys the snapshot carries must not cost keys nothing prices
         // exactly their fuzzy match.
         assert!(pricing.find("claude-opus-5-20260115").is_some());
+    }
+
+    #[test]
+    fn adapter_prefix_does_not_shadow_exact_only_fast_tier() {
+        let pricing = PricingMap::load_embedded();
+        let fast = pricing.find("claude-opus-5-fast").unwrap();
+        let prefixed = pricing
+            .find("[pi] claude-opus-5-fast")
+            .expect("Pi-prefixed Fast ids should resolve to the Fast tier");
+
+        assert_eq!(prefixed.input, fast.input);
+        assert_eq!(prefixed.output, fast.output);
+        assert_eq!(
+            pricing.context_limit("[pi] claude-opus-5-fast"),
+            pricing.context_limit("claude-opus-5-fast")
+        );
+
+        let base = pricing.find("claude-opus-5").unwrap();
+        assert!(fast.input > base.input);
+    }
+
+    #[test]
+    fn adapter_prefix_still_resolves_models_that_are_in_litellm() {
+        let pricing = PricingMap::load_embedded();
+        let unprefixed = pricing.find("gpt-5.4").unwrap();
+        let prefixed = pricing
+            .find("[pi] gpt-5.4")
+            .expect("Pi-prefixed LiteLLM ids should strip to the unprefixed entry");
+
+        assert_eq!(prefixed.input, unprefixed.input);
+        assert_eq!(prefixed.output, unprefixed.output);
+        assert_eq!(
+            pricing.context_limit("[pi] gpt-5.4"),
+            pricing.context_limit("gpt-5.4")
+        );
+    }
+
+    #[test]
+    fn embedded_pricing_includes_public_estimates_for_composer_2_5() {
+        let pricing = PricingMap::load_embedded();
+        let standard = pricing
+            .find("composer-2.5")
+            .expect("Composer 2.5 should have a public-rate estimate");
+
+        assert!((standard.input * 1e6 - 0.5).abs() < 1e-9);
+        assert!((standard.output * 1e6 - 2.5).abs() < 1e-9);
+        assert!((standard.cache_read * 1e6 - 0.2).abs() < 1e-9);
+        assert!(standard.cache_read_explicit);
+
+        let prefixed = pricing.find("[pi] composer-2.5").unwrap();
+        assert_eq!(prefixed.input, standard.input);
+        assert_eq!(
+            pricing.find("cursor/composer-2-5").unwrap().input,
+            standard.input
+        );
+        assert_eq!(
+            pricing.find("[pi] cursor/composer-2-5").unwrap().input,
+            standard.input
+        );
+        assert_eq!(
+            pricing.find("cursor/composer-2-5:slow").unwrap().input,
+            standard.input
+        );
+
+        let fast = pricing
+            .find("composer-2.5-fast")
+            .expect("Composer 2.5 Fast should have a public-rate estimate");
+        assert!((fast.input * 1e6 - 3.0).abs() < 1e-9);
+        assert!((fast.output * 1e6 - 15.0).abs() < 1e-9);
+        assert!((fast.cache_read * 1e6 - 0.5).abs() < 1e-9);
+        assert_eq!(
+            pricing.find("cursor/composer-2-5:fast").unwrap().input,
+            fast.input
+        );
+        assert_eq!(
+            pricing.find("[pi] cursor/composer-2-5-fast").unwrap().input,
+            fast.input
+        );
+        assert_eq!(pricing.find("composer-2.5").unwrap().input, standard.input);
+    }
+
+    #[test]
+    fn estimated_pricing_does_not_replace_existing_entries() {
+        let mut pricing = PricingMap::default();
+        pricing.entries.insert(
+            "composer-2.5".to_string(),
+            Pricing {
+                input: 1e-6,
+                output: 2e-6,
+                cache_create: 1.25e-6,
+                cache_read: 0.1e-6,
+                cache_read_explicit: true,
+                cache_create_explicit: true,
+                input_above_200k: None,
+                output_above_200k: None,
+                cache_create_above_200k: None,
+                cache_read_above_200k: None,
+                long_context_threshold: None,
+                fast_multiplier: 1.0,
+            },
+        );
+
+        pricing.put_estimated_pricing();
+
+        assert_eq!(pricing.find_exact("composer-2.5").unwrap().input, 1e-6);
+        assert!(pricing.find_exact("composer-2.5-fast").is_some());
+    }
+
+    #[test]
+    fn strip_adapter_prefix_reads_store_label() {
+        assert_eq!(
+            super::strip_adapter_prefix("[pi] composer-2.5"),
+            Some("composer-2.5")
+        );
+        assert_eq!(
+            super::strip_adapter_prefix("[omp] gpt-5.4"),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            super::strip_adapter_prefix("[grok] grok-4.5"),
+            Some("grok-4.5")
+        );
+        assert_eq!(super::strip_adapter_prefix("composer-2.5"), None);
+        assert_eq!(super::strip_adapter_prefix("[pi]"), None);
+        assert_eq!(super::strip_adapter_prefix("[pi] "), None);
+        assert_eq!(
+            super::strip_adapter_prefix("[pi] [pi] composer-2.5"),
+            Some("[pi] composer-2.5")
+        );
+    }
+
+    #[test]
+    fn adapter_prefix_does_not_fuzzy_match_the_store_label() {
+        let mut pricing = PricingMap::default();
+        pricing.entries.insert(
+            "pi".to_string(),
+            Pricing {
+                input: 9e-6,
+                output: 9e-6,
+                cache_create: 9e-6,
+                cache_read: 9e-7,
+                cache_read_explicit: true,
+                cache_create_explicit: true,
+                input_above_200k: None,
+                output_above_200k: None,
+                cache_create_above_200k: None,
+                cache_read_above_200k: None,
+                long_context_threshold: None,
+                fast_multiplier: 1.0,
+            },
+        );
+
+        assert!(pricing.find("[pi] unknown-model-xyz").is_none());
+        assert_eq!(pricing.find("pi").unwrap().input, 9e-6);
+        assert_eq!(pricing.find("[pi] pi").unwrap().input, 9e-6);
     }
 
     #[test]
@@ -4156,6 +4494,37 @@ mod tests {
             assert_eq!(entry.long_context_threshold, sol.long_context_threshold);
             assert_eq!(entry.fast_multiplier, sol.fast_multiplier);
             assert_eq!(pricing.context_limit("gpt-5.6"), Some(654_321));
+        }
+
+        #[test]
+        fn pricing_overrides_replace_estimated_unpublished_model_rates() {
+            let mut pricing = PricingMap::load_embedded();
+            let estimated = pricing.find("composer-2.5").unwrap();
+            assert!(estimated.input > 0.0);
+
+            let overrides = build_overrides("composer-2.5", |o| {
+                o.input_cost_per_token = Some(9e-6);
+                o.output_cost_per_token = Some(11e-6);
+            });
+            pricing.apply_overrides(overrides.iter());
+
+            let entry = pricing.find("composer-2.5").unwrap();
+            assert_eq!(entry.input, 9e-6);
+            assert_eq!(entry.output, 11e-6);
+            assert_eq!(pricing.find("[pi] composer-2.5").unwrap().input, 9e-6);
+        }
+
+        #[test]
+        fn prefixed_pricing_override_wins_for_that_spelling_only() {
+            let mut pricing = PricingMap::load_embedded();
+            let base = pricing.find("composer-2.5").unwrap();
+            let overrides = build_overrides("[pi] composer-2.5", |o| {
+                o.input_cost_per_token = Some(9e-6);
+            });
+            pricing.apply_overrides(overrides.iter());
+
+            assert_eq!(pricing.find("[pi] composer-2.5").unwrap().input, 9e-6);
+            assert_eq!(pricing.find("composer-2.5").unwrap().input, base.input);
         }
 
         #[test]

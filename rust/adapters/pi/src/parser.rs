@@ -209,8 +209,8 @@ fn read_session_file_with_context(
         }
         let raw_model = message.model.clone();
         let model = raw_model
-            .as_ref()
-            .map(|model| format!("[{}] {model}", context.store_name()));
+            .as_deref()
+            .map(|model| prefixed_model(context.store_name(), model));
         let display_cost = usage_value.cost.as_ref().and_then(|cost| cost.total);
         let cost = context.cost(
             raw_model.as_deref(),
@@ -369,8 +369,23 @@ fn store_pricing(
 ) -> Option<Pricing> {
     let pricing = pricing?;
     display_model
-        .and_then(|model| pricing.find_exact(model))
+        .and_then(|model| pricing.find(model))
         .or_else(|| raw_model.and_then(|model| pricing.find(model)))
+}
+
+fn prefixed_model(store_name: &str, raw: &str) -> String {
+    let name = strip_existing_adapter_prefix(raw.trim()).unwrap_or(raw.trim());
+    format!("[{store_name}] {name}")
+}
+
+fn strip_existing_adapter_prefix(model: &str) -> Option<&str> {
+    let rest = model.strip_prefix('[')?;
+    let (prefix, rest) = rest.split_once(']')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    let name = rest.strip_prefix(' ').unwrap_or(rest).trim();
+    (!name.is_empty()).then_some(name)
 }
 
 pub(super) fn entry_id_for_store(store_name: &str, entry: &LoadedEntry) -> String {
@@ -630,5 +645,94 @@ mod tests {
         .unwrap();
 
         assert_ne!(entry_id(&pi), entry_id_for_store("omp", &omp));
+    }
+
+    #[test]
+    fn prices_composer_from_public_estimates_when_litellm_has_no_entry() {
+        let fixture = fs_fixture!({
+            "sessions/project-a/agent_session-a.jsonl": r#"{"type":"message","timestamp":"2026-01-02T00:00:00.000Z","message":{"role":"assistant","model":"composer-2.5","usage":{"input":1000000,"output":1000000}}}"#,
+        });
+        let file = fixture.path("sessions/project-a/agent_session-a.jsonl");
+        let pricing = PricingMap::load_embedded();
+
+        let entries = read_session_file(&file, None, CostMode::Calculate, Some(&pricing)).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model.as_deref(), Some("[pi] composer-2.5"));
+        assert!((entries[0].cost - 3.0).abs() < 1e-9);
+        assert_eq!(entries[0].missing_pricing_model, None);
+    }
+
+    #[test]
+    fn prices_cursor_composer_provider_id_and_fast_variant() {
+        let fixture = fs_fixture!({
+            "sessions/project-a/agent_session-a.jsonl": concat!(
+                r#"{"type":"message","timestamp":"2026-01-02T00:00:00.000Z","message":{"role":"assistant","model":"cursor/composer-2-5","usage":{"input":1000000,"output":1000000}}}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-01-02T00:00:01.000Z","message":{"role":"assistant","model":"cursor/composer-2-5:fast","usage":{"input":1000000,"output":1000000}}}"#,
+            ),
+        });
+        let file = fixture.path("sessions/project-a/agent_session-a.jsonl");
+        let pricing = PricingMap::load_embedded();
+
+        let entries = read_session_file(&file, None, CostMode::Calculate, Some(&pricing)).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].model.as_deref(),
+            Some("[pi] cursor/composer-2-5")
+        );
+        assert!((entries[0].cost - 3.0).abs() < 1e-9);
+        assert_eq!(
+            entries[1].model.as_deref(),
+            Some("[pi] cursor/composer-2-5:fast")
+        );
+        assert!((entries[1].cost - 18.0).abs() < 1e-9);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.missing_pricing_model.is_none())
+        );
+    }
+
+    #[test]
+    fn does_not_double_prefix_when_model_already_has_store_prefix() {
+        let fixture = fs_fixture!({
+            "sessions/project-a/agent_session-a.jsonl": r#"{"type":"message","timestamp":"2026-01-02T00:00:00.000Z","message":{"role":"assistant","model":"[pi] composer-2.5","usage":{"input":100,"output":200}}}"#,
+        });
+        let file = fixture.path("sessions/project-a/agent_session-a.jsonl");
+
+        let entries = read_session_file(&file, None, CostMode::Display, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model.as_deref(), Some("[pi] composer-2.5"));
+        assert_eq!(
+            entries[0].data.message.model.as_deref(),
+            Some("[pi] composer-2.5")
+        );
+    }
+
+    #[test]
+    fn named_store_prices_composer_through_store_prefix() {
+        let fixture = fs_fixture!({
+            "sessions/project-a/agent_session-a.jsonl": r#"{"type":"message","timestamp":"2026-01-02T00:00:00.000Z","message":{"role":"assistant","model":"composer-2.5","usage":{"input":1000000,"output":1000000}}}"#,
+        });
+        let file = fixture.path("sessions/project-a/agent_session-a.jsonl");
+        let pricing = PricingMap::load_embedded();
+
+        let entries = read_session_file_for_store(
+            &file,
+            &fixture.path("sessions"),
+            None,
+            CostMode::Calculate,
+            Some(&pricing),
+            "omp",
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model.as_deref(), Some("[omp] composer-2.5"));
+        assert!((entries[0].cost - 3.0).abs() < 1e-9);
+        assert_eq!(entries[0].missing_pricing_model, None);
     }
 }

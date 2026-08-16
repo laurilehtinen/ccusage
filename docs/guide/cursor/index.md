@@ -61,7 +61,7 @@ contain a non-zero value; [JSON output](/guide/json-output) keeps
 - **Token usage** - Cursor hook payloads use inclusive input (cache sits inside `input_tokens`). When `totalTokens` matches an exclusive sum (`input + output + cache`), input is left uncached. Cache read and cache write are reported separately.
 - **Reasoning tokens** - Reasoning is a subset of output and is **not** added again.
 - **Precomputed cost** - These local files do not persist an invoice amount. `display` is `$0` unless a record includes `costUSD` / `chargedCents`.
-- **Pricing** - `calculate`, and the default `auto` when no recorded cost exists, use LiteLLM / models.dev tables. Pricing tries `model_id` first (for example `grok-4.6`), then the display id, then a `cursor-` prefix strip, then Grok Build family candidates (`grok-build` → `grok-build-0.1`).
+- **Pricing** - `calculate`, and the default `auto` when no recorded cost exists, use LiteLLM / models.dev tables, plus estimated public rates for Cursor models LiteLLM does not list (Composer 2.5). Pricing tries `model_id` first (for example `grok-4.6`), then the display id, then a `cursor-` prefix strip, then Grok Build family candidates (`grok-build` → `grok-build-0.1`). Composer Fast uses the `composer-2.5-fast` estimate when the recorded id ends in `-fast` or `:fast`. Override the estimates with [`pricingOverrides`](/guide/config-files#pricing-overrides) if Cursor changes the published rates.
 - **Model labels** - Display form is the hook `model` when present (for example `cursor-grok-4.6-high-fast`). The Agent column identifies the Cursor CLI source in unified reports.
 
 ## Environment Variables
