@@ -50,7 +50,7 @@ LiteLLM estimates as the fallback. In-progress turns count only after
 ::: details Cursor CLI
 Cursor Agent CLI and the Cursor SDK are supported when they persist token
 counts locally. ccusage reads `${CURSOR_AGENT_HOME:-~/.cursor}/chats/**/store.db`
-(including hex-encoded `meta` and blob `tokenCount`), `acp-sessions/**/store.db`,
+(including hex-encoded `meta` and billed blob `tokenCount` / `usage` only), `acp-sessions/**/store.db`,
 and `projects/*/sdk-agent-store/*/index.db` (including the `run_events` table,
 plus optional `runs.ndjson` / `run_events.ndjson`, and per-agent
 `agents/*/store.db` when a hash has no `index.db`). Interactive CLI sessions

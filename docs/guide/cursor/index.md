@@ -41,7 +41,7 @@ $CURSOR_AGENT_HOME/   # or ~/.cursor
     └── agents/<sha256>/store.db                  # per-agent blobs when `index.db` is absent
 ```
 
-Only rows that already carry token counts are counted. All-zero usage blobs, including placeholder `tokenCount: {0,0}` values, are skipped. The Cursor Admin API is not used.
+Only rows that already carry billed token counts are counted. That is the SDK catalog (`index.db` `usage_json` / `run_events`, plus optional `runs.ndjson` / `run_events.ndjson`). Interactive CLI `store.db` chats that only persist a context-window snapshot are omitted. All-zero usage blobs, including placeholder `tokenCount: {0,0}` values, are skipped. The Cursor Admin API is not used.
 
 ## Report Views
 
@@ -103,7 +103,7 @@ Ensure recorded usage exists under `~/.cursor/chats/**/store.db`, `~/.cursor/acp
 :::
 
 ::: details Only some Cursor CLI sessions appear
-Interactive CLI chats under `~/.cursor/chats/<workspace-hash>/<uuid>/store.db` are listed by that folder UUID (the same id `cursor agent --resume` uses), not by an `agent-...` SDK id. The CLI `meta` row is hex-encoded JSON (`lastUsedModel`, `createdAt`, `agentId`); ccusage decodes it and applies it to blob `tokenCount` / `usage` payloads that omit model or timestamp. SDK catalog rows still use `agent-...` ids. All-zero token blobs are skipped. IDE Composer history in `state.vscdb` is not a source.
+Interactive CLI chats under `~/.cursor/chats/<workspace-hash>/<uuid>/store.db` are listed only when a blob already recorded billed `tokenCount` / `usage`. Current Cursor CLI chats usually store conversation protobuf without those fields, so they do not appear. SDK catalog rows use `agent-...` ids and come from `index.db`. All-zero token blobs are skipped. IDE Composer history in `state.vscdb` is not a source.
 :::
 
 ::: details Costs showing as $0.00
@@ -111,5 +111,5 @@ Cursor does not persist invoice USD in these local files, so `display` is zero. 
 :::
 
 ::: details Totals lower than a Cursor UI usage panel
-ccusage only counts turns that already recorded token counts on disk. In-progress turns, transcripts, and cloud Admin API history are out of scope.
+ccusage only lists SDK/`cursor agent` turns that recorded billed token counts on disk (`usage_json` / `run_events`). Interactive chats that only store a context-window snapshot, in-progress turns, transcripts, and cloud Admin API history are out of scope.
 :::
