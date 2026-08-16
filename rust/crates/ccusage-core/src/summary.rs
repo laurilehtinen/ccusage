@@ -160,6 +160,20 @@ impl SessionAccumulator {
     }
 }
 
+pub fn summarize_sessions(entries: &[LoadedEntry]) -> Result<Vec<UsageSummary>> {
+    let mut groups = BTreeMap::<String, SessionAccumulator>::new();
+    for entry in entries {
+        groups
+            .entry(entry.session_id.to_string())
+            .or_default()
+            .add_entry(entry);
+    }
+    groups
+        .into_values()
+        .map(SessionAccumulator::into_summary)
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 pub enum BucketKind {
     Monthly,
@@ -474,6 +488,88 @@ mod tests {
             "weekly": weekly,
             "monthly": monthly,
         }));
+    }
+
+    #[test]
+    fn sorts_session_rows_oldest_first_so_newest_is_last() {
+        let mut rows = vec![
+            session_summary("newer", "2026-01-03T18:00:00.000Z"),
+            session_summary("older", "2026-01-01T08:00:00.000Z"),
+            session_summary("middle", "2026-01-02T12:34:00.000Z"),
+        ];
+
+        sort_summaries(&mut rows, &SortOrder::Asc, |row| {
+            crate::report_sort_key(row, crate::cli::AgentReportKind::Session)
+        });
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.session_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("older"), Some("middle"), Some("newer")]
+        );
+    }
+
+    #[test]
+    fn summarize_sessions_records_last_activity_from_latest_entry() {
+        let entries = vec![
+            loaded_entry(LoadedEntryFixture {
+                date: "2026-01-02",
+                timestamp: 1_767_316_800_000,
+                session_id: "session-a",
+                project_path: "/workspace/api",
+                model: Some("gpt-5"),
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                extra_total_tokens: 0,
+                cost: 0.01,
+                credits: None,
+                message_count: Some(1),
+                version: None,
+                missing_pricing_model: None,
+            }),
+            loaded_entry(LoadedEntryFixture {
+                date: "2026-01-03",
+                timestamp: 1_767_402_000_000,
+                session_id: "session-a",
+                project_path: "/workspace/api",
+                model: Some("gpt-5"),
+                input_tokens: 5,
+                output_tokens: 1,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                extra_total_tokens: 0,
+                cost: 0.02,
+                credits: None,
+                message_count: Some(1),
+                version: None,
+                missing_pricing_model: None,
+            }),
+        ];
+
+        let rows = summarize_sessions(&entries).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_id.as_deref(), Some("session-a"));
+        assert_eq!(
+            rows[0].last_activity.as_deref(),
+            Some("2026-01-03T01:00:00.000Z")
+        );
+        assert_eq!(rows[0].input_tokens, 15);
+    }
+
+    fn session_summary(session_id: &'static str, last_activity: &'static str) -> UsageSummary {
+        let mut row = summary_row(SummaryFixture {
+            date: None,
+            model: "gpt-5",
+            cost: 0.1,
+            input_tokens: 1,
+        });
+        row.session_id = Some(session_id.to_string());
+        row.last_activity = Some(last_activity.to_string());
+        row
     }
 
     #[test]

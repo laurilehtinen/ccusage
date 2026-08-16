@@ -1,9 +1,10 @@
 use serde_json::{Value, json};
 
 use crate::{
-    BucketKind, LoadedEntry, Result, SessionAccumulator, agent_summary_json,
+    BucketKind, LoadedEntry, Result, agent_summary_json,
     cli::{AgentReportKind, SortOrder, WeekDay},
-    sort_summaries, summarize_by_key, summarize_summaries_by_bucket, summary_period, totals_json,
+    sort_report_rows, summarize_by_key, summarize_sessions, summarize_summaries_by_bucket,
+    totals_json,
 };
 
 pub fn report_json(
@@ -12,7 +13,7 @@ pub fn report_json(
     order: &SortOrder,
 ) -> Result<Value> {
     let mut rows = summarize_entries(entries, kind)?;
-    sort_summaries(&mut rows, order, |row| summary_period(row));
+    sort_report_rows(&mut rows, kind, order);
     Ok(report_from_rows(&rows, kind))
 }
 
@@ -61,24 +62,7 @@ pub fn summarize_entries(
                 WeekDay::Sunday,
             ))
         }
-        AgentReportKind::Session => {
-            let mut grouped: Vec<SessionAccumulator> = Vec::new();
-            let mut group_indexes = std::collections::HashMap::new();
-            for entry in entries {
-                let key = &entry.session_id;
-                let index = *group_indexes.entry(key.clone()).or_insert_with(|| {
-                    let index = grouped.len();
-                    grouped.push(SessionAccumulator::default());
-                    index
-                });
-                grouped[index].add_entry(entry);
-            }
-            let mut rows = Vec::with_capacity(grouped.len());
-            for group in grouped {
-                rows.push(group.into_summary()?);
-            }
-            Ok(rows)
-        }
+        AgentReportKind::Session => summarize_sessions(entries),
     }
 }
 

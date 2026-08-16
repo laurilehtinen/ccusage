@@ -370,12 +370,12 @@ fn finish_rows(kind: AgentReportKind, mut rows: Vec<AllRow>, shared: &SharedArgs
         for row in &mut rows {
             row.metadata_agents = None;
         }
-        sort_rows(&mut rows, &shared.order);
+        sort_rows(&mut rows, kind, &shared.order);
         return rows;
     }
 
     let mut aggregated = aggregate_rows(rows, kind);
-    sort_rows(&mut aggregated, &shared.order);
+    sort_rows(&mut aggregated, kind, &shared.order);
     aggregated
 }
 

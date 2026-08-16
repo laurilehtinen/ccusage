@@ -15,17 +15,17 @@ use crate::{
     MILLIS_PER_DAY, MILLIS_PER_MINUTE, Result, SessionAccumulator, TimestampMs, block_json,
     calculate_burn_rate,
     cli::{
-        BlocksArgs, CostSource, DailyArgs, SessionArgs, SharedArgs, SortOrder, StatuslineArgs,
-        VisualBurnRate, WeekDay, WeeklyArgs,
+        AgentReportKind, BlocksArgs, CostSource, DailyArgs, SessionArgs, SharedArgs, SortOrder,
+        StatuslineArgs, VisualBurnRate, WeekDay, WeeklyArgs,
     },
     color,
     fast::FxHashMap,
     filter_and_sort_summaries, filter_blocks_by_date, format_currency, format_date, format_number,
     format_remaining_time, format_rfc3339_millis, group_project_output, identify_session_blocks,
     load_daily_summaries, load_entries, print_active_block_detail, print_blocks_table,
-    print_json_or_jq, print_usage_table, session_summary_json, sort_blocks, sort_summaries,
-    summarize_by_key, summarize_summaries_by_bucket, summary_json, total_usage_tokens, totals_json,
-    utc_now, wants_json,
+    print_json_or_jq, print_usage_table, session_summary_json, sort_blocks, sort_report_rows,
+    sort_summaries, summarize_by_key, summarize_summaries_by_bucket, summary_json,
+    total_usage_tokens, totals_json, utc_now, wants_json,
 };
 
 pub(crate) fn run_daily(args: DailyArgs) -> Result<()> {
@@ -147,9 +147,7 @@ pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
         return run_session_id(&id, &shared);
     }
 
-    let mut session_shared = shared.clone();
-    session_shared.order = SortOrder::Desc;
-    let entries = load_entries(&session_shared, None)?;
+    let entries = load_entries(&shared, None)?;
     let mut grouped = Vec::<SessionAccumulator>::new();
     let mut group_indexes = FxHashMap::<(Arc<str>, Arc<str>), usize>::default();
     for entry in &entries {
@@ -169,37 +167,28 @@ pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
     for group in grouped {
         rows.push(group.into_summary()?);
     }
-    if session_shared.since.is_some() || session_shared.until.is_some() {
+    if shared.since.is_some() || shared.until.is_some() {
         rows.retain(|row| {
             let date = row
                 .last_activity
                 .as_deref()
                 .unwrap_or_default()
                 .replace('-', "");
-            session_shared
-                .since
-                .as_ref()
-                .is_none_or(|since| &date >= since)
-                && session_shared
-                    .until
-                    .as_ref()
-                    .is_none_or(|until| &date <= until)
+            shared.since.as_ref().is_none_or(|since| &date >= since)
+                && shared.until.as_ref().is_none_or(|until| &date <= until)
         });
     }
     rows.retain(|row| {
         row.input_tokens + row.output_tokens + row.cache_creation_tokens + row.cache_read_tokens > 0
     });
-    rows.sort_by(|a, b| match session_shared.order {
-        SortOrder::Asc => a.total_cost.total_cmp(&b.total_cost),
-        SortOrder::Desc => b.total_cost.total_cmp(&a.total_cost),
-    });
+    sort_report_rows(&mut rows, AgentReportKind::Session, &shared.order);
 
-    if wants_json(&session_shared) {
+    if wants_json(&shared) {
         let output = json!({
             "sessions": rows.iter().map(session_summary_json).collect::<Vec<_>>(),
             "totals": totals_json(&rows),
         });
-        print_json_or_jq(output, session_shared.jq.as_deref(), session_shared.no_cost)?;
+        print_json_or_jq(output, shared.jq.as_deref(), shared.no_cost)?;
         return Ok(());
     }
 
@@ -207,7 +196,7 @@ pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
         "Claude Code Token Usage Report - By Session",
         "Session",
         &rows,
-        &session_shared,
+        &shared,
         false,
         None,
     )?;

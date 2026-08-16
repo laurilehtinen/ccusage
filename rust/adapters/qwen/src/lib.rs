@@ -11,7 +11,7 @@ mod report;
 use crate::{
     Result,
     cli::{AgentCommandArgs, AgentReportKind, SharedArgs},
-    print_json_or_jq, print_usage_table, sort_summaries, wants_json,
+    print_json_or_jq, print_usage_table, wants_json,
 };
 
 pub use loader::load_entries;
@@ -29,9 +29,7 @@ pub fn run(args: AgentCommandArgs) -> Result<()> {
     if args.kind == AgentReportKind::Session {
         filter_session_summaries(&mut rows, &args.shared);
     }
-    sort_summaries(&mut rows, &args.shared.order, |row| {
-        ccusage_core::summary_period(row)
-    });
+    sort_report_rows(&mut rows, args.kind, &args.shared.order);
     if wants_json(&args.shared) {
         return print_json_or_jq(
             report_from_rows(&rows, args.kind),

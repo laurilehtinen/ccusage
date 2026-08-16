@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use crate::{
     Align, Color, ModelBreakdown, Result, SimpleTable, UsageSummary,
     cli::{AgentReportKind, SharedArgs, SortOrder},
-    cli_error, color, format_currency, format_models_multiline, format_number, json_float,
+    cli_error, color, format_currency, format_last_activity_display, format_models_multiline,
+    format_number, json_float,
     output::strip_cost_json,
     print_box_title, short_model_name, should_use_compact_layout,
 };
@@ -209,27 +210,47 @@ pub(super) fn print_table(
         terminal_width,
         crate::USAGE_COMPACT_WIDTH_THRESHOLD,
     );
+    let include_last_activity = kind == AgentReportKind::Session;
     let (headers, aligns) = all_table_columns(kind, compact, shared.no_cost);
     let mut table = SimpleTable::new(headers, aligns, crate::terminal_style(shared))
         .with_terminal_width(terminal_width)
         .with_date_compaction(true);
 
     for row in rows {
-        table.push(all_table_row(row, compact, false, shared.no_cost));
+        table.push(all_table_row(
+            row,
+            compact,
+            false,
+            shared.no_cost,
+            include_last_activity,
+        ));
         if let Some(agent_breakdowns) = row.agent_breakdowns.as_ref() {
             for breakdown in agent_breakdowns {
-                table.push(all_table_row(breakdown, compact, true, shared.no_cost));
+                table.push(all_table_row(
+                    breakdown,
+                    compact,
+                    true,
+                    shared.no_cost,
+                    include_last_activity,
+                ));
                 if shared.breakdown && !breakdown.model_breakdowns.is_empty() {
                     push_model_breakdown_rows(
                         &mut table,
                         &breakdown.model_breakdowns,
                         compact,
                         shared,
+                        include_last_activity,
                     );
                 }
             }
         } else if shared.breakdown && !row.model_breakdowns.is_empty() {
-            push_model_breakdown_rows(&mut table, &row.model_breakdowns, compact, shared);
+            push_model_breakdown_rows(
+                &mut table,
+                &row.model_breakdowns,
+                compact,
+                shared,
+                include_last_activity,
+            );
         }
     }
     table.separator();
@@ -263,6 +284,9 @@ pub(super) fn print_table(
         ];
         if shared.no_cost {
             total_row.pop();
+        }
+        if include_last_activity {
+            total_row.push(String::new());
         }
         table.push(total_row);
     } else {
@@ -304,6 +328,9 @@ pub(super) fn print_table(
         ];
         if shared.no_cost {
             total_row.pop();
+        }
+        if include_last_activity {
+            total_row.push(String::new());
         }
         table.push(total_row);
     }
@@ -390,6 +417,7 @@ pub(super) fn all_table_row(
     compact: bool,
     breakdown: bool,
     no_cost: bool,
+    include_last_activity: bool,
 ) -> Vec<String> {
     let period = if breakdown {
         String::new()
@@ -421,6 +449,9 @@ pub(super) fn all_table_row(
         if no_cost {
             values.pop();
         }
+        if include_last_activity {
+            values.push(session_last_activity_display(row, breakdown));
+        }
         return values;
     }
 
@@ -438,7 +469,25 @@ pub(super) fn all_table_row(
     if no_cost {
         values.pop();
     }
+    if include_last_activity {
+        values.push(session_last_activity_display(row, breakdown));
+    }
     values
+}
+
+fn session_last_activity_display(row: &AllRow, breakdown: bool) -> String {
+    if breakdown {
+        return String::new();
+    }
+    format_last_activity_display(session_last_activity(row))
+}
+
+fn session_last_activity(row: &AllRow) -> &str {
+    row.metadata
+        .as_ref()
+        .and_then(|value| value.get("lastActivity"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 fn table_total_tokens(row: &AllRow) -> u64 {
@@ -453,6 +502,7 @@ fn push_model_breakdown_rows(
     breakdowns: &[ModelBreakdown],
     compact: bool,
     shared: &SharedArgs,
+    include_last_activity: bool,
 ) {
     for b in breakdowns {
         let total =
@@ -474,6 +524,9 @@ fn push_model_breakdown_rows(
             if shared.no_cost {
                 row.pop();
             }
+            if include_last_activity {
+                row.push(String::new());
+            }
             table.push(row);
         } else {
             let mut row = vec![
@@ -489,6 +542,9 @@ fn push_model_breakdown_rows(
             ];
             if shared.no_cost {
                 row.pop();
+            }
+            if include_last_activity {
+                row.push(String::new());
             }
             table.push(row);
         }
@@ -549,13 +605,23 @@ pub(super) fn all_table_columns(
         headers.pop();
         aligns.pop();
     }
+    if kind == AgentReportKind::Session {
+        headers.push("Last Activity");
+        aligns.push(Align::Left);
+    }
     (headers, aligns)
 }
 
-pub(super) fn sort_rows(rows: &mut [AllRow], order: &SortOrder) {
-    rows.sort_by(|a, b| match a.period.cmp(&b.period) {
-        std::cmp::Ordering::Equal => a.agent.cmp(b.agent),
-        order => order,
+pub(super) fn sort_rows(rows: &mut [AllRow], kind: AgentReportKind, order: &SortOrder) {
+    rows.sort_by(|a, b| {
+        let activity = if kind == AgentReportKind::Session {
+            session_last_activity(a).cmp(session_last_activity(b))
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        activity
+            .then_with(|| a.period.cmp(&b.period))
+            .then_with(|| a.agent.cmp(b.agent))
     });
     if *order == SortOrder::Desc {
         rows.reverse();
